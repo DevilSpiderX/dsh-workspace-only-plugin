@@ -1,0 +1,8 @@
+# dsh-workspace-only-plugin bundle patch: mounts the host plugin row. The
+# `permission` row is left untouched so this layer never collides with other
+# bundles' permission presets (each row is last-write-wins per bundle order).
+
+- insert:
+    - id: workspace-only
+      name: dsh-workspace-only-plugin
+      config: {}
