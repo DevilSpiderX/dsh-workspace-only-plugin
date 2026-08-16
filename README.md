@@ -25,6 +25,18 @@ DeepSeek Harness (dsh) 插件:为 dsh 增加 "Workspace Only" 开关。
 `@nanmicoder/dsh-auto-mode` 的 `lib/client.js` 中 `REQUIRED_PERMISSION_LABELS` 的
 `"Workspace Write"` 改为 `"Write Only"`(auto 升级后需重打)。
 
+## 核心补丁(升级 dsh 后需 `node scripts/patch-core.mjs` 重打)
+
+1. `@deepseek-ai/dsh-host-apiproxy` 的 `WEB_SETTINGS_NAMESPACES` 白名单加入
+   `"workspace-only"`——该白名单决定 Web 客户端可读写的设置命名空间,插件自身无法注册暴露;
+2. 上述 auto 插件标签补丁。
+
+两处都幂等,脚本自动跳过已打过的文件。
+
+## 安装(续)
+
+5. `cd /Volumes/CBR DATA/项目/dsh-workspace-only-plugin && node scripts/patch-core.mjs`(打核心补丁)。
+
 ## 边界
 
 - 守卫是工具层启发式(词法路径检查),非内核级读取限制;写操作另有内核围栏。

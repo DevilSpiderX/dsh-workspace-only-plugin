@@ -55,5 +55,8 @@
       "optional": true
     }
   },
-  "license": "MIT"
+  "license": "MIT",
+  "scripts": {
+    "patch-core": "node scripts/patch-core.mjs"
+  }
 }
