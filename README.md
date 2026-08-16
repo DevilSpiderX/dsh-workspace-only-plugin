@@ -4,10 +4,11 @@ DeepSeek Harness (dsh) 插件:为 dsh 增加 "Workspace Only" 开关。
 
 ## 功能
 
-- 开关开启后,**任何模式**(read-only / workspace-write / danger-full-access / auto)下,代理的文件访问都限制在当前会话工作目录:
-  - `sandboxPolicy.resolve` 被包装,比 `workspace-write` 更宽的模式一律降级(只降不升,read-only 保持只读),内核写边界为工作区;
-  - 越出工作区的 `read`/`write`/`edit`/`read_image`/`glob`/`grep`/`bash`/`pwsh` 调用在 execute 前**请求用户确认**(approval 弹窗),不硬拒:用户批准则放行,拒绝才拒绝;
-  - 批准后的越界写,在 Write Only 模式内核围栏仍会拦截,此时按 dsh 既有 escalation 流程(`sandbox_permissions`)再确认一次后放行——写操作始终需要用户明确同意;
+- 开关开启后,**任何模式**(read-only / workspace-write / danger-full-access / auto)无差别对待:代理访问工作目录以外的文件,一律**弹窗请求用户确认**:
+  - 弹窗直接派发在 `approval/request` 通道上,**绕过审批策略闸门**——即使会话是 Full access(审批 = never)也会弹出,不会静默拒绝;
+  - 用户批准 → 放行这一次调用(按会话自身模式执行);用户拒绝 / 无应答渠道 → 拒绝;
+  - 越出工作区的 `read`/`write`/`edit`/`read_image`/`glob`/`grep`/`bash`/`pwsh` 调用都会触发;
+  - 内嵌路径(`node -e` / `python -c` 字符串里的绝对路径)也会被词法扫描捕获并触发弹窗;
   - auto 模式插件(`@nanmicoder/dsh-auto-mode`)照常运行但被收编:其分类器仍裁决工作区内调用,越界调用先走本插件的用户确认。
 - 权限预设 `workspace-write` 显示名**永久**改为 "Write Only"(与开关状态无关)。
 - 开关为全局设置(持久化到 settings.yaml),所有会话立即生效;设置页与输入栏各有一个开关。
@@ -40,6 +41,6 @@ DeepSeek Harness (dsh) 插件:为 dsh 增加 "Workspace Only" 开关。
 
 ## 边界
 
-- 守卫是工具层启发式(词法路径检查),非内核级读取限制;写操作另有内核围栏。
-- 内核 `/tmp` 仍可写(工具链需要),工具层拦截 `/tmp` 写入。
+- 收编是工具层闸门(词法路径扫描),非内核级隔离;扫描器无法静态看到的路径(完全动态计算)是残余面,与 auto-mode 插件同级哲学。
+- 在 Write Only(workspace-write)会话,批准后的越界**写**仍受内核围栏拦截,此时按 dsh 既有 escalation 流程(`sandbox_permissions`)再确认一次后放行——写操作始终需要用户明确同意。
 - 技能加载、会话持久化等 dsh 内部机制不受影响。
