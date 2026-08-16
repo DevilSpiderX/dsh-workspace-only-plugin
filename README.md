@@ -15,6 +15,16 @@ DeepSeek Harness (dsh) 插件:为 dsh 增加 "Workspace Only" 开关。
 
 ## 安装
 
+**一行安装(推荐):**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/CsBpRd/dsh-workspace-only-plugin/main/install.sh | bash
+```
+
+脚本自动:装进 profile 的 bundle 层栈(`dsh plugin add`,首次使用自动初始化 profile)→ 打两个必需的核心补丁 → 检测到运行中的 dsh web 则以原命令行重启(会话持久化,重启后恢复)。可调环境变量:`DSH_PROFILE`(默认 web)、`DSH_HOME`、`DSH_NO_RESTART=1`(跳过重启)。
+
+**手动安装:**
+
 1. 在 `~/.dsh/profiles/web/package.json` 的 `dependencies` 加:
    `"dsh-workspace-only-plugin": "file:/Volumes/CBR DATA/项目/dsh-workspace-only-plugin"`
 2. 在 `dsh.profile.bundles` 末尾追加 `"dsh-workspace-only-plugin"`。
