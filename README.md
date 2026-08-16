@@ -6,8 +6,9 @@ DeepSeek Harness (dsh) 插件:为 dsh 增加 "Workspace Only" 开关。
 
 - 开关开启后,**任何模式**(read-only / workspace-write / danger-full-access / auto)下,代理的文件访问都限制在当前会话工作目录:
   - `sandboxPolicy.resolve` 被包装,比 `workspace-write` 更宽的模式一律降级(只降不升,read-only 保持只读),内核写边界为工作区;
-  - 工具层守卫在 execute 前硬拒:越出工作区的 `read`/`write`/`edit`/`read_image`/`glob`/`grep`/`bash`/`pwsh` 调用,以及一切 `sandbox_permissions` 越权升级;
-  - auto 模式插件(`@nanmicoder/dsh-auto-mode`)照常运行但被收编:其分类器仍裁决工作区内调用,越界调用被本插件守卫先拒。
+  - 越出工作区的 `read`/`write`/`edit`/`read_image`/`glob`/`grep`/`bash`/`pwsh` 调用在 execute 前**请求用户确认**(approval 弹窗),不硬拒:用户批准则放行,拒绝才拒绝;
+  - 批准后的越界写,在 Write Only 模式内核围栏仍会拦截,此时按 dsh 既有 escalation 流程(`sandbox_permissions`)再确认一次后放行——写操作始终需要用户明确同意;
+  - auto 模式插件(`@nanmicoder/dsh-auto-mode`)照常运行但被收编:其分类器仍裁决工作区内调用,越界调用先走本插件的用户确认。
 - 权限预设 `workspace-write` 显示名**永久**改为 "Write Only"(与开关状态无关)。
 - 开关为全局设置(持久化到 settings.yaml),所有会话立即生效;设置页与输入栏各有一个开关。
 
