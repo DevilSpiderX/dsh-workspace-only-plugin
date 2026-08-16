@@ -26,7 +26,7 @@ curl -fsSL https://raw.githubusercontent.com/CsBpRd/dsh-workspace-only-plugin/ma
 **手动安装:**
 
 1. 在 `~/.dsh/profiles/web/package.json` 的 `dependencies` 加:
-   `"dsh-workspace-only-plugin": "file:/Volumes/CBR DATA/项目/dsh-workspace-only-plugin"`
+   `"dsh-workspace-only-plugin": "github:CsBpRd/dsh-workspace-only-plugin"`
 2. 在 `dsh.profile.bundles` 末尾追加 `"dsh-workspace-only-plugin"`。
 3. `cd ~/.dsh/profiles/web && pnpm install`。
 4. 重启 dsh web 服务。
