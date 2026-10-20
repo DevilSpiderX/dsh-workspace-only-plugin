@@ -35,6 +35,8 @@ curl -fsSL https://raw.githubusercontent.com/CsBpRd/dsh-workspace-only-plugin/ma
 
 **升级 dsh 后**请跑一次自检：`node scripts/check-compat.mjs`（探测审批词汇、pre-execute 词汇、插件记录通道、问答通道、runner 覆盖、volatile 配置等契约，漂移会打印差异报告）。
 
+> 为什么 `package.json` 不声明 `peerDependencies`：DSH 内部包的版本随发行版以 prerelease 形态演进（如 `0.2.1-rc.2`），semver 对 prerelease 的匹配规则是「只允许同 `major.minor.patch` 且带 prerelease 标记的比较器」——任何固定范围（包括 `*`）都会在下一次 rc 升级时误报「不兼容」。本插件按官方 Host-only bundle 的做法不声明依赖，真实兼容性由 `scripts/check-compat.mjs` 探测实际契约来判定。
+
 ## 配置
 
 配置住在插件的 DSH 0.2 Config 里（当前 profile 的 `cordis.patch.yml` → `config`），设置卡片与插件共享同一份实时值：
