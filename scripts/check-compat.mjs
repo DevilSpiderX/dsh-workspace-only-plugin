@@ -202,6 +202,24 @@ function main() {
 		}
 	}
 
+	// 8. Client module table: every `require()` in lib/client.js must be a
+	//    request some shipped client bundle already makes. The browser module
+	//    table is frozen (PLATFORM_MODULES + declared dsh.client.external), so
+	//    an id no shipped bundle requests will refuse plugin activation.
+	{
+		const baselineOwners = ["dsh-client-ui-layout", "dsh-client-ui-chat", "dsh-client-locale", "dsh-client-ui-conversation"];
+		const baseline = new Set();
+		for (const pkg of baselineOwners) {
+			const found = locate(pkg, "lib/client.js", roots);
+			if (found === void 0) continue;
+			for (const match of found.text.matchAll(/require\("([^"]+)"\)/g)) baseline.add(match[1]);
+		}
+		const mine = readFileSync(new URL("../lib/client.js", import.meta.url), "utf8");
+		const requested = [...mine.matchAll(/require\("([^"]+)"\)/g)].map((match) => match[1]);
+		const unknown = requested.filter((spec) => !baseline.has(spec));
+		record(baseline.size > 0 && unknown.length === 0, "client module table requests", baseline.size === 0 ? "no shipped client bundle found to derive the platform seed baseline" : unknown.length === 0 ? void 0 : `lib/client.js requires ${unknown.map((value) => JSON.stringify(value)).join(", ")} which no shipped client bundle requests — likely absent from the frozen platform module table (dsh-client-modules README: PLATFORM_MODULES + dsh.client.external)`);
+	}
+
 	for (const title of passes) console.log(`PASS  ${title}`);
 	for (const failure of failures) {
 		console.log(`FAIL  ${failure.title}`);
