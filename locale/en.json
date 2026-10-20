@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Workspace Only",
+    "description": "Confines agent file access in every sandbox mode to the session workspace: a three-choice gate for outside paths, a persistent always-whitelist, and per-session bypass."
+  }
+}

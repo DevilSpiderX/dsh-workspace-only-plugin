@@ -6,7 +6,8 @@
 # Env:
 #   DSH_HOME     dsh home (default ~/.dsh)
 #   DSH_PROFILE  target profile (default web)
-#   DSH_NO_RESTART=1  skip restarting a running dsh web server
+#   DSH_KEEP_ACL=1   keep the built-in sandbox runner (skip the passthrough override)
+#   DSH_NO_RESTART=1 skip restarting a running dsh web server
 set -euo pipefail
 
 DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
@@ -27,13 +28,19 @@ say "installing into profile: $PROFILE"
 #    and appends the plugin to dsh.profile.bundles, since it declares dsh.bundle).
 dsh plugin --profile "$PROFILE" add "$PLUGIN_SPEC"
 
-# 2. Apply the two required core patches (idempotent): the apiproxy settings
-#    allowlist and, when auto-mode is installed, its permission-label list.
-PATCH_SCRIPT="$PROFILE_DIR/node_modules/dsh-workspace-only-plugin/scripts/patch-core.mjs"
-if [ -f "$PATCH_SCRIPT" ]; then
-  node "$PATCH_SCRIPT"
+# 2. Swap the sandbox's ACL runner for the passthrough runner (task C). The
+#    override lives in the profile's cordis.patch.yml and is idempotent; remove
+#    it (or run with DSH_KEEP_ACL=1) to restore the built-in runner chain.
+#    No node_modules patch is applied anywhere: the plugin runs unpatched.
+if [ "${DSH_KEEP_ACL:-}" = "1" ]; then
+  say "keeping the built-in sandbox runner (DSH_KEEP_ACL=1)"
 else
-  die "installed package is missing scripts/patch-core.mjs — re-run the installer after the repository updates"
+  RUNNER_SCRIPT="$PROFILE_DIR/node_modules/dsh-workspace-only-plugin/scripts/configure-runner.mjs"
+  if [ -f "$RUNNER_SCRIPT" ]; then
+    node "$RUNNER_SCRIPT" --profile "$PROFILE"
+  else
+    die "installed package is missing scripts/configure-runner.mjs — re-run the installer after the repository updates"
+  fi
 fi
 
 # 3. Restart a running dsh web server with its own command line (sessions are
@@ -58,3 +65,4 @@ else
 fi
 
 say "done. Open the web UI, refresh, and toggle Workspace Only."
+say "after every dsh upgrade run once: node scripts/check-compat.mjs"

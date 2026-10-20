@@ -1,46 +1,109 @@
-import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
-import { homedir } from "node:os";
-import { join } from "node:path";
+/**
+ * Scanner verification (task A). Runs the pure lexical gate in `lib/scanner.js`
+ * against synthetic paths — POSIX and Windows spellings alike — including
+ * false-positive controls. No deployment or DSH runtime required:
+ *
+ *   node scripts/verify-scanner.mjs
+ */
+import { lexicallyWithin, pathReason, shellReason } from "../lib/scanner.js";
 
-const require = createRequire(import.meta.url);
+const posixRoot = "/Volumes/CBR DATA/项目/dsh-workspace-only-plugin";
+const winRoot = "C:\\work\\project";
 
-const deployed = readFileSync(join(homedir(), ".dsh", "profiles", "web", "node_modules", "dsh-workspace-only-plugin", "lib", "index.js"), "utf8");
-
-const grab = (name) => {
-	const i = deployed.indexOf(`function ${name}`);
-	if (i < 0) throw new Error(`function ${name} not found`);
-	const j = deployed.indexOf("\n}", i);
-	return deployed.slice(i, j + 2);
-};
-const interiorStart = deployed.indexOf("const INTERIOR_PATH");
-const lineEnd = deployed.indexOf("\n", interiorStart);
-const interiorDecl = deployed.slice(interiorStart, lineEnd);
-
-const code = [
-	"const { isAbsolute, join, normalize, relative, sep } = require('node:path');",
-	grab("lexicallyWithin"),
-	grab("shellTokens"),
-	interiorDecl,
-	grab("shellReason")
-].join("\n");
-const load = new Function("exports", "require", "module", `${code}\n;exports.shellReason = shellReason;`);
-const m = { exports: {} };
-load(m.exports, require, m);
-
-const root = "/Volumes/CBR DATA/项目/dsh-workspace-only-plugin";
+/**
+ * [command, expected, root?] — expected "FLAG" (gate fires) or "OK" (passes).
+ * Windows cases use synthetic paths only.
+ */
 const cases = [
-	["cat /etc/passwd", "FLAG"],
-	["node -e \"console.log(require('fs').readFileSync('/etc/passwd','utf8'))\"", "FLAG"],
-	["python3 -c \"print(open('/etc/passwd').read())\"", "FLAG"],
-	["node -e \"console.log(require('fs').existsSync('/etc/hosts'))\"", "FLAG"],
-	["cd \"/Volumes/CBR DATA/项目/dsh-workspace-only-plugin\" && ls", "OK"],
-	["node -e \"console.log(require('fs').existsSync('/etc/hosts'))\"", "FLAG"]
+	// --- existing POSIX regression ---
+	["cat /etc/passwd", "FLAG", posixRoot],
+	["node -e \"console.log(require('fs').readFileSync('/etc/passwd','utf8'))\"", "FLAG", posixRoot],
+	["python3 -c \"print(open('/etc/passwd').read())\"", "FLAG", posixRoot],
+	["node -e \"console.log(require('fs').existsSync('/etc/hosts'))\"", "FLAG", posixRoot],
+	["cd \"/Volumes/CBR DATA/项目/dsh-workspace-only-plugin\" && ls", "OK", posixRoot],
+	["mkdir -p src/x && echo ok", "OK", posixRoot],
+	// --- Windows: drive-letter tokens ---
+	["type C:\\tmp\\example.txt", "FLAG", winRoot],
+	["type c:\\tmp\\example.txt", "FLAG", winRoot],
+	["type C:/tmp/example.txt", "FLAG", winRoot],
+	["cd C:\\work\\project && dir", "OK", winRoot],
+	["cd c:\\work\\PROJECT\\src && dir", "OK", winRoot],
+	// --- Windows: embedded drive paths inside interpreter strings ---
+	["node -e \"console.log(require('fs').existsSync('C:\\tmp\\example'))\"", "FLAG", winRoot],
+	["python -c \"print(open('C:\\\\tmp\\\\example').read())\"", "FLAG", winRoot],
+	["node -e \"console.log(require('fs').existsSync('C:\\work\\project\\src'))\"", "OK", winRoot],
+	// --- Windows: `..\` / `../` / mixed-separator escapes ---
+	["type ..\\secrets.txt", "FLAG", winRoot],
+	["type ..\\..\\secrets.txt", "FLAG", winRoot],
+	["type ../secrets.txt", "FLAG", winRoot],
+	["type a\\..\\..\\secrets.txt", "FLAG", winRoot],
+	["type ..", "FLAG", winRoot],
+	["move src\\a.txt dist\\b.txt", "OK", winRoot],
+	// --- Windows: UNC ---
+	["type \\\\server\\share\\x", "FLAG", winRoot],
+	["type \"\\\\server\\share\\x\"", "FLAG", winRoot],
+	// --- Windows: redirection prefixes ---
+	["echo hi > C:\\tmp\\example.txt", "FLAG", winRoot],
+	["echo hi 2> C:\\tmp\\example.txt", "FLAG", winRoot],
+	["echo hi &>> C:\\tmp\\example.txt", "FLAG", winRoot],
+	["echo hi > out.log", "OK", winRoot],
+	// --- Windows: quoting ---
+	["type \"C:\\tmp\\example.txt\"", "FLAG", winRoot],
+	["type 'C:\\tmp\\example.txt'", "FLAG", winRoot],
+	["type \"src\\x\"", "OK", winRoot],
+	// --- false-positive controls: plain words and relative segments never fire ---
+	["type src\\x", "OK", winRoot],
+	["type src/x", "OK", winRoot],
+	["echo hello world", "OK", winRoot],
+	["findstr main src\\index.js", "OK", winRoot],
+	["git status", "OK", winRoot],
+	["node -e \"console.log('abc/x')\"", "OK", winRoot],
+	// --- home and $HOME still fire ---
+	["type %USERPROFILE%\\x", "OK", winRoot],
+	["type ~\\x", "FLAG", winRoot],
+	["type ~", "FLAG", winRoot],
+	["echo $HOME", "FLAG", winRoot]
 ];
+
+/**
+ * [target, root, expectedInside] — containment verdicts for path arguments,
+ * including Windows case-insensitivity.
+ */
+const containment = [
+	["C:\\work\\project\\src", winRoot, true],
+	["c:\\work\\PROJECT\\src\\a.txt", winRoot, true],
+	["src\\a.txt", winRoot, true],
+	["C:\\tmp\\example.txt", winRoot, false],
+	["..\\secrets.txt", winRoot, false],
+	["C:\\work", winRoot, false],
+	["/etc/passwd", posixRoot, false],
+	["src/x", posixRoot, true],
+	["../x", posixRoot, false],
+	["~/x", posixRoot, false]
+];
+
 let pass = 0;
-for (const [cmd, expect] of cases) {
-	const got = m.exports.shellReason(cmd, root) === undefined ? "OK" : "FLAG";
-	console.log(`${got === expect ? "PASS" : "FAIL"}  ${cmd}  => ${got}`);
-	if (got === expect) pass += 1;
+let total = 0;
+for (const [cmd, expect, root] of cases) {
+	total += 1;
+	const got = shellReason(cmd, root) === undefined ? "OK" : "FLAG";
+	const ok = got === expect;
+	if (ok) pass += 1;
+	console.log(`${ok ? "PASS" : "FAIL"}  [${expect}] ${cmd}  => ${got}`);
 }
-console.log(`${pass}/${cases.length} passed`);
+for (const [target, root, expectInside] of containment) {
+	total += 1;
+	const inside = lexicallyWithin(target, root);
+	const ok = inside === expectInside;
+	if (ok) pass += 1;
+	console.log(`${ok ? "PASS" : "FAIL"}  containment ${JSON.stringify(target)} in ${JSON.stringify(root)} => ${inside ? "inside" : "outside"}`);
+}
+{
+	// pathReason keeps the workspace-safe path silent and flags home/escapes.
+	total += 1;
+	const ok = pathReason("src\\a.txt", winRoot, "write target") === undefined && pathReason("~\\x", winRoot, "write target") !== void 0 && pathReason("C:\\tmp\\x", winRoot, "write target") !== void 0;
+	if (ok) pass += 1;
+	console.log(`${ok ? "PASS" : "FAIL"}  pathReason mixed verdicts`);
+}
+console.log(`${pass}/${total} passed`);
+if (pass !== total) process.exitCode = 1;
