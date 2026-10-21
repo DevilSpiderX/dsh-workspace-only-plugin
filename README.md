@@ -6,10 +6,10 @@ DeepSeek Harness (dsh) 插件：把**任何沙箱模式**（read-only / workspac
 
 - **全局开关**（`Config.enabled`）：开启后，越出工作区的 `read`/`write`/`edit`/`read_image`/`glob`/`grep`/`bash`/`pwsh` 调用都会停下来问用户；关闭则完全不干预。
 - **三键裁决**（`仅此一次 / 总是允许本目录 / 拒绝`）：
-  - 通过官方的 `ctx.userQuestions` 问答通道提问（DSH 为「permission plugins」预留的 `user-questions/request` 瀑布），Web 端在输入栏旁弹出可回答的问题卡片；其他 answer UI（TUI 等）同样可用；
+  - 越界调用触发时，输入栏被一张**三键卡片接管**——与 dsh 权限提升面板同款形态（警示条 + 工具/目标路径/原因 + 按钮行），`Enter`=仅此一次、`Esc`=拒绝；
   - **总是允许本目录** → 目录写入 `Config.always` 白名单（持久化到 profile 的 `cordis.patch.yml`），同目录后续直接放行；
-  - **拒绝 / 关闭卡片 / 超时**（`Config.dialogTimeoutMs`，默认 120s）→ 拒绝该次调用；
-  - 无任何应答端（headless）或提问方是子代理 → 回退到官方 `approval/request` 弹窗（与旧版行为一致，**依然绕过 `never` 策略**，Full access 会话也弹）；完全没有应答渠道时拒绝（fail closed）。
+  - **拒绝 / 超时**（`Config.dialogTimeoutMs`，默认 120s）→ 拒绝该次调用；
+  - 无 Web 客户端（卡片未现身）→ 回退通用问题卡片（`ctx.userQuestions`，TUI 等）→ 再回退官方 `approval/request` 弹窗（与旧版行为一致，**依然绕过 `never` 策略**，Full access 会话也弹）；完全没有应答渠道时拒绝（fail closed）。
 - **白名单管理**：设置页列出/删除已允许目录；「最近询问的目录」一键加白（上限 20 条，仅展示用）。
 - **会话级放飞**（per-session bypass）：composer 快捷按钮**右键或长按**打开会话菜单，「放飞本会话 / 恢复本会话」；放飞的会话直接跳过门禁（连白名单都不查），其他会话照常。状态记在会话日志（ignorable `plugin:` 记录）+ 进程内权威，跨重启保留、会话间隔离。设置页可查看并撤销。
 - **Windows 路径扫描**：shell 命令里的盘符（`C:\...`、`C:/...`）、UNC（`\\server\share`）、反斜杠逃逸（`..\`）与 POSIX 形态同等对待；路径包含判定对 Windows 形态使用 `path.win32` 语义（大小写不敏感）。
