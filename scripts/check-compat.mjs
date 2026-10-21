@@ -15,8 +15,9 @@
  *   3. `dsh-session` plugin-record channel (`appendPluginRecord`/`pluginRecordOf`);
  *   4. `dsh-user-questions` question seam (`user-questions/request`, NO_PROVIDER);
  *   5. `dsh-api-remotes` forwarded-event allowlist (approval/request, user-questions/request);
- *   6. `dsh-sandbox-local` runner override contract (`runnerCommand` + `--`);
- *   7. `schemastery` `.volatile()` fields (the E1 configuration channel).
+ *   6. `schemastery` `.volatile()` fields (the E1 configuration channel);
+ *   7. client module table requests (every `require()` in lib/client.js must
+ *      be one the shipped client bundles already make).
  */
 import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -180,19 +181,7 @@ function main() {
 		}
 	}
 
-	// 6. dsh-sandbox-local: the runnerCommand override (task C).
-	{
-		const found = locate("dsh-sandbox-local", "lib/index.js", roots);
-		if (found === void 0) {
-			record(false, "dsh-sandbox-local present", "package not found in any source root");
-		} else {
-			const shapes = ["runnerCommand", "runnerFailureSignatures"];
-			const gone = shapes.filter((needle) => !found.text.includes(needle));
-			record(gone.length === 0, "sandbox runner override", gone.length === 0 ? void 0 : `runnerCommand contract drifted in ${found.origin}: missing ${gone.join(", ")}`);
-		}
-	}
-
-	// 7. schemastery: volatile configuration fields (task E1).
+	// 6. schemastery: volatile configuration fields (task E1).
 	{
 		const found = locate("schemastery", "lib/index.mjs", roots) ?? locate("schemastery", "lib/index.cjs", roots);
 		if (found === void 0) {

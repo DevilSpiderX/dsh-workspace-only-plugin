@@ -41,7 +41,6 @@
   "license": "MIT",
   "scripts": {
     "verify-scanner": "node scripts/verify-scanner.mjs",
-    "check-compat": "node scripts/check-compat.mjs",
-    "configure-runner": "node scripts/configure-runner.mjs"
+    "check-compat": "node scripts/check-compat.mjs"
   }
 }

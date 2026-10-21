@@ -13,7 +13,6 @@ DeepSeek Harness (dsh) 插件：把**任何沙箱模式**（read-only / workspac
 - **白名单管理**：设置页列出/删除已允许目录；「最近询问的目录」一键加白（上限 20 条，仅展示用）。
 - **会话级放飞**（per-session bypass）：composer 快捷按钮**右键或长按**打开会话菜单，「放飞本会话 / 恢复本会话」；放飞的会话直接跳过门禁（连白名单都不查），其他会话照常。状态记在会话日志（ignorable `plugin:` 记录）+ 进程内权威，跨重启保留、会话间隔离。设置页可查看并撤销。
 - **Windows 路径扫描**：shell 命令里的盘符（`C:\...`、`C:/...`）、UNC（`\\server\share`）、反斜杠逃逸（`..\`）与 POSIX 形态同等对待；路径包含判定对 Windows 形态使用 `path.win32` 语义（大小写不敏感）。
-- **直通 runner**（可选，任务 C）：用官方 `runnerCommand` 顶掉 win32 的 ACL 受限令牌 runner，消除误拒与受限令牌开销；`dsh-fs-sandbox` 进程内写围栏与 `sandbox_permissions` 升权流程**不变**。
 - 零 node_modules 补丁：开关/白名单走插件 Config（DSH 0.2 配置通道），不再需要 0.1 时代 apiproxy 白名单补丁；`workspace-write` 预设改名 "Write Only" 改为可选项（默认关闭，与 auto 插件零冲突）。
 
 ## 安装
@@ -24,16 +23,15 @@ DeepSeek Harness (dsh) 插件：把**任何沙箱模式**（read-only / workspac
 curl -fsSL https://raw.githubusercontent.com/CsBpRd/dsh-workspace-only-plugin/main/install.sh | bash
 ```
 
-脚本自动：`dsh plugin add` 装进 profile → 写入直通 runner 覆盖（`DSH_KEEP_ACL=1` 可跳过）→ 检测到运行中的 dsh web 则以原命令行重启。环境变量：`DSH_PROFILE`（默认 web）、`DSH_HOME`、`DSH_KEEP_ACL=1`、`DSH_NO_RESTART=1`。
+脚本自动：`dsh plugin add` 装进 profile → 检测到运行中的 dsh web 则以原命令行重启。环境变量：`DSH_PROFILE`（默认 web）、`DSH_HOME`、`DSH_NO_RESTART=1`。
 
 **手动安装：**
 
 1. 在 `~/.dsh/profiles/web/package.json` 的 `dependencies` 加 `"dsh-workspace-only-plugin": "github:CsBpRd/dsh-workspace-only-plugin"`，并在 `dsh.profile.bundles` 末尾追加 `"dsh-workspace-only-plugin"`；
 2. `cd ~/.dsh/profiles/web && pnpm install`；
-3. （可选，换掉 ACL runner）`node node_modules/dsh-workspace-only-plugin/scripts/configure-runner.mjs --profile web`；
-4. 重启 dsh web。
+3. 重启 dsh web。
 
-**升级 dsh 后**请跑一次自检：`node scripts/check-compat.mjs`（探测审批词汇、pre-execute 词汇、插件记录通道、问答通道、runner 覆盖、volatile 配置等契约，漂移会打印差异报告）。
+**升级 dsh 后**请跑一次自检：`node scripts/check-compat.mjs`（探测审批词汇、pre-execute 词汇、插件记录通道、问答通道、volatile 配置、client 模块表等契约，漂移会打印差异报告）。
 
 > 为什么 `package.json` 不声明 `peerDependencies`：DSH 内部包的版本随发行版以 prerelease 形态演进（如 `0.2.1-rc.2`），semver 对 prerelease 的匹配规则是「只允许同 `major.minor.patch` 且带 prerelease 标记的比较器」——任何固定范围（包括 `*`）都会在下一次 rc 升级时误报「不兼容」。本插件按官方 Host-only bundle 的做法不声明依赖，真实兼容性由 `scripts/check-compat.mjs` 探测实际契约来判定。
 
@@ -58,32 +56,42 @@ curl -fsSL https://raw.githubusercontent.com/CsBpRd/dsh-workspace-only-plugin/ma
 
 注意：patch 的 override 语义是**整体替换** `config`，写 override 时带上需要的全部字段。
 
-## 直通 runner（ACL 替换，任务 C）
-
-win32 默认的沙箱后端是 ACL 受限令牌 runner，实际使用中可能误拒正常文件访问。直通 runner 改为直接执行命令：
-
-- 写入的覆盖（`scripts/configure-runner.mjs` 幂等维护，标记注释 `# workspace-only-passthrough-runner`）：
-
-  ```yaml
-  - id: sandbox
-    config:
-      runnerCommand: ["<node 绝对路径>", "<插件绝对路径>/scripts/passthrough-runner.mjs"]
-      runnerFailureSignatures: ["workspace-only-passthrough: "]
-  ```
-
-- **回退**：删除该块（或 `node scripts/configure-runner.mjs --remove`）即恢复内置 runner 链。
-- **取舍**：换掉 ACL 后 shell 命令**没有内核级隔离**，防线 = 工具层词法门禁 + 三键裁决 + `dsh-fs-sandbox` 写围栏 + 升权确认（与 MiMo-Code 同级威胁模型）。
-- runner 自身故障打 `workspace-only-passthrough: <detail>` 并以 127 退出，由 `runnerFailureSignatures` 归类为「runner 坏了」而非「命令失败」。
-
 ## 与 auto 插件共存
 
 `renamePresetLabel` 默认 `false`，本插件不再改预设名，与 `@nanmicoder/dsh-auto-mode` 零冲突（也不再需要它的标签补丁）。若显式开启改名，auto 插件按标签匹配权限菜单的逻辑需要自行适配。
+
+## 行为矩阵（官方模式 × 仅工作区开关）
+
+三键门禁与官方沙箱是**叠加**关系：门禁只决定"越界要不要问你"，实际执行仍受官方模式约束（批准 ≠ 越权）。以下均基于官方内置沙箱后端（含 win32 ACL runner）。
+
+| 官方模式 | 仅工作区 **开** | 仅工作区 **关** |
+|---|---|---|
+| **read-only** | 工作区内读照常；**越界读弹三键**（允许才读）。写操作（越界时）也弹，但**批准了也写不了**——read-only 下官方围栏拒绝一切变更 | 纯官方只读：读随意、写全拒 |
+| **workspace-write** | 门禁与官方围栏叠加（典型配置）：越界**读**弹三键，允许即读；越界**写**弹三键 → 允许后仍被写围栏拦（`FS_SANDBOX_DENIED`）→ 再走 `sandbox_permissions` 升权确认 → 才真写（**双确认**）；工作区内读写照常不弹；shell 命令内路径扫描，越界路径弹三键 | 纯官方 workspace-write：越界读随意；越界写靠写围栏 + 升权；工作区内可写 |
+| **danger-full-access** | **核心用例**：官方无任何围栏，但越界读/写/搜索/shell **全部弹三键**（approval policy 为 `never` 也照弹）；批准后完全放行 | **⚠️ 完全裸奔**：无围栏、无门禁，代理可读写任意路径 |
+
+通用规则（所有格子适用）：
+
+- **会话放飞**优先级最高：放飞的会话直接跳过门禁（等效该会话"关"），其他会话不受影响；
+- **白名单目录**（"总是允许本目录"）内免弹，等效工作区内；
+- 带 `sandbox_permissions` 的升权调用本身**跳过**门禁（避免双弹窗），由官方升权流程单独确认；
+- 审批策略（`ask`/`never`）不影响门禁：弹窗不走 `ApprovalService`，`never` 会话也照弹。
+
+推荐组合：
+
+| 想要的效果 | 组合 |
+|---|---|
+| 最强约束（默认建议） | `workspace-write` + **开** |
+| 只防读泄露、允许自由写 | `danger-full-access` + **开** |
+| 纯官方行为 | 任意模式 + **关** |
+| 不推荐 | `danger-full-access` + **关**（除非在一次性隔离环境） |
 
 ## 边界与残余面
 
 - 收编是**工具层词法门禁**，非内核隔离。扫描器看不到的路径（完全动态计算、环境变量拼接如 `%USERPROFILE%`）是文档化的残余面，与 auto-mode 插件同级哲学。
 - 在 workspace-write 会话，批准后的越界**写**仍受进程内写围栏拦截（`FS_SANDBOX_DENIED`），随后走 dsh 既有 `sandbox_permissions` 升权再确认一次——写操作始终需要明确同意；携带 `sandbox_permissions` 的调用本身跳过本插件门禁（避免双弹窗）。
-- 三键问题卡片渲染依赖 Web 端 user-questions UI；关闭卡片视为拒绝。headless/TUI 回退官方审批弹窗。
+- 三键卡片渲染依赖 Web 端（`conversation.composer` 槽位接管）；无 Web 客户端时回退通用问题卡片（TUI 等）→ 官方审批弹窗。卡片超时视为拒绝。
+- 沙箱执行约束全部沿用官方（含 win32 的 ACL 受限令牌 runner 与 `dsh-fs-sandbox` 写围栏）：本插件只在工具层加门禁，不改动任何沙箱后端。
 - 会话放飞的持久化尽力而为（ignorable 插件记录 + 进程内权威 + 下一次 turn 内补写）；极端丢失时门禁自动恢复（fail-safe）。
 
 ## 开发自检

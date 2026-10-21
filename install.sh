@@ -6,7 +6,6 @@
 # Env:
 #   DSH_HOME     dsh home (default ~/.dsh)
 #   DSH_PROFILE  target profile (default web)
-#   DSH_KEEP_ACL=1   keep the built-in sandbox runner (skip the passthrough override)
 #   DSH_NO_RESTART=1 skip restarting a running dsh web server
 set -euo pipefail
 
@@ -28,23 +27,10 @@ say "installing into profile: $PROFILE"
 #    and appends the plugin to dsh.profile.bundles, since it declares dsh.bundle).
 dsh plugin --profile "$PROFILE" add "$PLUGIN_SPEC"
 
-# 2. Swap the sandbox's ACL runner for the passthrough runner (task C). The
-#    override lives in the profile's cordis.patch.yml and is idempotent; remove
-#    it (or run with DSH_KEEP_ACL=1) to restore the built-in runner chain.
-#    No node_modules patch is applied anywhere: the plugin runs unpatched.
-if [ "${DSH_KEEP_ACL:-}" = "1" ]; then
-  say "keeping the built-in sandbox runner (DSH_KEEP_ACL=1)"
-else
-  RUNNER_SCRIPT="$PROFILE_DIR/node_modules/dsh-workspace-only-plugin/scripts/configure-runner.mjs"
-  if [ -f "$RUNNER_SCRIPT" ]; then
-    node "$RUNNER_SCRIPT" --profile "$PROFILE"
-  else
-    die "installed package is missing scripts/configure-runner.mjs — re-run the installer after the repository updates"
-  fi
-fi
-
-# 3. Restart a running dsh web server with its own command line (sessions are
-#    persisted in the session log, so a restart resumes them).
+# 2. Restart a running dsh web server with its own command line (sessions are
+#    persisted in the session log, so a restart resumes them). No node_modules
+#    patch and no sandbox override is applied anywhere: the plugin runs
+#    unpatched and the sandbox keeps its built-in runner.
 if [ "${DSH_NO_RESTART:-}" = "1" ]; then
   say "plugin installed — restart dsh web manually to load it"
   exit 0
