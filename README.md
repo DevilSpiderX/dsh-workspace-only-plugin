@@ -11,7 +11,7 @@ DeepSeek Harness (dsh) 插件：把**任何沙箱模式**（read-only / workspac
   - **拒绝 / 超时**（`Config.dialogTimeoutMs`，默认 120s）→ 拒绝该次调用；
   - 无 Web 客户端（卡片未现身）→ 回退通用问题卡片（`ctx.userQuestions`，TUI 等）→ 再回退官方 `approval/request` 弹窗（与旧版行为一致，**依然绕过 `never` 策略**，Full access 会话也弹）；完全没有应答渠道时拒绝（fail closed）。
 - **白名单管理**：设置页列出/删除已允许目录；「最近询问的目录」一键加白（上限 20 条，仅展示用）。
-- **会话级放飞**（per-session bypass）：composer 快捷按钮**右键或长按**打开会话菜单，「放飞本会话 / 恢复本会话」；放飞的会话直接跳过门禁（连白名单都不查），其他会话照常。状态记在会话日志（ignorable `plugin:` 记录）+ 进程内权威，跨重启保留、会话间隔离。设置页可查看并撤销。
+- **会话级开关**（per-session bypass）：composer 旁的快捷按钮控制**本会话**的门禁，悬停有作用域说明——「仅工作区：开/关」，单击即放飞本会话 / 恢复本会话；放飞的会话直接跳过门禁（连白名单都不查），其他会话照常。总开关关闭或未打开会话时按钮隐藏。状态记在会话日志（ignorable `plugin:` 记录）+ 进程内权威，跨重启保留、会话间隔离；设置页可查看并撤销放飞中的会话。
 - **Windows 路径扫描**：shell 命令里的盘符（`C:\...`、`C:/...`）、UNC（`\\server\share`）、反斜杠逃逸（`..\`）与 POSIX 形态同等对待；路径包含判定对 Windows 形态使用 `path.win32` 语义（大小写不敏感）。
 - 零 node_modules 补丁：开关/白名单走插件 Config（DSH 0.2 配置通道），不再需要 0.1 时代 apiproxy 白名单补丁；`workspace-write` 预设改名 "Write Only" 改为可选项（默认关闭，与 auto 插件零冲突）。
 
@@ -105,6 +105,6 @@ node scripts/verify-scanner.mjs   # 词法扫描用例（POSIX + Windows，含�
 node scripts/check-compat.mjs     # 对本机 dsh 安装做契约自检
 ```
 
-实现结构：`lib/scanner.js`（纯词法扫描，可独立测试）、`lib/ask.js`（三键会合点与回退链）、`lib/approval-compat.js`（官方审批瀑布封装）、`lib/session-state.js`（会话级放飞与审计记录）、`lib/remote-service.js`（client→host 管理 RPC）、`lib/index.js`（门禁装配）、`lib/client.js`（设置行与 composer 快捷按钮/菜单）。
+实现结构：`lib/scanner.js`（纯词法扫描，可独立测试）、`lib/ask.js`（三键会合点与回退链）、`lib/approval-compat.js`（官方审批瀑布封装）、`lib/session-state.js`（会话级放飞与审计记录）、`lib/remote-service.js`（client→host 管理 RPC）、`lib/index.js`（门禁装配）、`lib/client.js`（设置行与 composer 会话级快捷开关）。
 
 设计与 DSH 运行时契约详见 [`docs/increment-plan.md`](docs/increment-plan.md)（含实现中发现的契约出入记录）。
