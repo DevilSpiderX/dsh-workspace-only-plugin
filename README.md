@@ -1,6 +1,6 @@
 # dsh-workspace-only-plugin
 
-DeepSeek Harness (dsh) 插件：把**任何沙箱模式**（read-only / workspace-write / danger-full-access / auto）下代理的文件访问限制在会话工作区内，越界访问一律请用户裁决。适配 DSH **0.2.x**（已在 0.2.1-rc.2 验证）。
+DeepSeek Harness (dsh) 插件：把**任何沙箱模式**（read-only / workspace-write / danger-full-access / auto）下代理的文件访问限制在会话工作区内，越界访问一律请用户裁决；每个会话还能用 composer 旁的**档位选择框**把越界门禁放宽为「工作区外只读」或「完全放开」。适配 DSH **0.2.x**（已在 0.2.1-rc.2 验证）。
 
 ## 功能
 
@@ -66,6 +66,10 @@ dsh plugin --profile web add "github:CsBpRd/dsh-workspace-only-plugin#main"
 - id: workspace-only
   config:
     enabled: true
+    always:
+      - C:\data\shared\          # 全局条目（字符串）：处处生效
+      - root: C:\work\project    # 会话级条目 {root, dir}：仅同 root 会话生效
+        dir: C:\data\project-cache\
 ```
 
 注意：patch 的 override 语义是**整体替换** `config`，写 override 时带上需要的全部字段。
@@ -74,7 +78,17 @@ dsh plugin --profile web add "github:CsBpRd/dsh-workspace-only-plugin#main"
 
 `renamePresetLabel` 默认 `false`，本插件不再改预设名，与 `@nanmicoder/dsh-auto-mode` 零冲突（也不再需要它的标签补丁）。若显式开启改名，auto 插件按标签匹配权限菜单的逻辑需要自行适配。
 
-## 行为矩阵（官方模式 × 仅工作区开关）
+## 行为矩阵
+
+### 会话档位 × 越界访问（composer 旁选择框，仅本会话生效）
+
+| 会话档位 | 越界**读**（`read`/`read_image`/`glob`/`grep`） | 越界**写**（`write`/`edit`/`bash`/`pwsh`） | 敏感文件 | deny 规则 |
+|---|---|---|---|---|
+| **仅工作区内**（默认） | 弹三键 | 弹三键 | 弹三键 | 命中即拒 |
+| **工作区外只读** | **放行** | 弹三键（shell 保守按写） | 弹三键 | 命中即拒 |
+| **完全放开** | **放行** | **放行** | 弹三键 | 命中即拒 |
+
+### 官方模式 × 仅工作区开关（档位=「仅工作区内」时的叠加效果）
 
 三键门禁与官方沙箱是**叠加**关系：门禁只决定"越界要不要问你"，实际执行仍受官方模式约束（批准 ≠ 越权）。以下均基于官方内置沙箱后端（含 win32 ACL runner）。
 
@@ -87,7 +101,7 @@ dsh plugin --profile web add "github:CsBpRd/dsh-workspace-only-plugin#main"
 通用规则（所有格子适用）：
 
 - **deny 规则**优先级最高：命中直接拒绝、不弹窗，压过白名单、会话档位、总开关与平台临时区豁免（设置页可管理）；
-- **会话档位**（composer 旁选择框）决定越界读写要不要问：**仅工作区内**=越界读写都问；**工作区外只读**=越界读放行、越界写问（shell 保守按写）；**完全放开**=越界读写都放行。档位压过白名单（但压不过 deny 规则），只影响越界维度；
+- **会话档位**（composer 旁选择框）决定越界读写要不要问：**仅工作区内**=越界读写都问；**工作区外只读**=越界读放行、越界写问（shell 保守按写）；**完全放开**=越界读写都放行。档位与白名单是**叠加放行**（任一放行即免弹），但压不过 deny 规则，且只影响越界维度；
 - **白名单目录**内免弹，等效工作区内：全局条目（设置页）处处生效；会话级条目（`{root, dir}`，会话页「白名单目录」）仅同工作区根的会话生效；询问卡片「总是允许本目录」写入**会话级**条目；
 - **敏感文件**（`sensitivePatterns` 命中的 basename）**工作区内也弹三键，且不受会话档位影响**（「完全放开」档也弹）：一次调用既越界又敏感只弹一次（原因合并）；"总是允许此类文件"按 **pattern** 持久化（`sensitiveAlways`），与目录白名单正交——"总是允许本目录"不会放行敏感文件；
 - **平台临时区**默认免弹：`%TEMP%`/`os.tmpdir()` 下 `dsh-*` 或 `.dsh-*` 一级子目录（含子树）是 DSH 自己生成的落盘目录——`dsh-subprocess-*`（子进程大输出 spill）、`dsh-spill-*`（工具结果溢出）、`dsh-*`（沙箱受限进程的私有 TEMP）等，工具跟随 `spillPath` 或展开 `%TEMP%` 时不再询问；临时根本身、其下普通文件、其他位置的同名前缀目录照旧弹；
@@ -98,8 +112,9 @@ dsh plugin --profile web add "github:CsBpRd/dsh-workspace-only-plugin#main"
 
 | 想要的效果 | 组合 |
 |---|---|
-| 最强约束（默认建议） | `workspace-write` + **开** |
-| 只防读泄露、允许自由写 | `danger-full-access` + **开** |
+| 最强约束（默认建议） | `workspace-write` + **开** + 档位**仅工作区内** |
+| 只防读泄露、允许自由写 | `danger-full-access` + **开**（或任意模式 + 档位**工作区外只读**） |
+| 临时放开一个会话 | 任意模式 + **开** + 档位**完全放开**（敏感文件仍弹、deny 仍拦） |
 | 纯官方行为 | 任意模式 + **关** |
 | 不推荐 | `danger-full-access` + **关**（除非在一次性隔离环境） |
 
@@ -109,6 +124,8 @@ dsh plugin --profile web add "github:CsBpRd/dsh-workspace-only-plugin#main"
 - 默认只精确扫描 8 个工具（`read`/`write`/`edit`/`read_image`/`glob`/`grep`/`bash`/`pwsh`，误报低）；MCP/插件注册的其他工具默认不设防。开启 `scanAllTools` 进入全量保守模式：任何工具的参数里出现路径形状值都会判定，配合 `scanIgnoreTools` 豁免误报工具；shell 命令内的**相对**敏感路径（如 `cat .env`）不在词法扫描范围内。
 - 在 workspace-write 会话，批准后的越界**写**仍受进程内写围栏拦截（`FS_SANDBOX_DENIED`），随后走 dsh 既有 `sandbox_permissions` 升权再确认一次——写操作始终需要明确同意；携带 `sandbox_permissions` 的调用仅在官方升权弹窗必现（目标模式严格宽于会话当前模式）时跳过本插件门禁（避免双弹窗），重复/畸形升权照走三键。
 - 三键卡片渲染依赖 Web 端（`conversation.composer` 槽位接管）；无 Web 客户端时回退通用问题卡片（TUI 等）→ 官方审批弹窗。卡片超时视为拒绝。设置 `fastDenyMs > 0` 可让无应答渠道的调用（后台/无 UI）秒级拒绝而不挂满超时（`fast-deny` 审计通道）。
+- composer 档位选择框与会话页「白名单目录」视图依赖 Web 端槽位（`conversation.input.left` / `conversation.view`，用 `@deepseek-ai/dsh-client-ui-primitives` 渲染）；TUI 等无此界面时档位保持「仅工作区内」，白名单只能从设置页或询问卡片维护。
+- 档位的读写口径是**工具级**的：shell（`bash`/`pwsh`）命令内无法静态分辨读写，一律按写处理（「工作区外只读」下 shell 越界照弹）；`scanAllTools` 覆盖的未知工具同样保守按写。
 - 沙箱执行约束全部沿用官方（含 win32 的 ACL 受限令牌 runner 与 `dsh-fs-sandbox` 写围栏）：本插件只在工具层加门禁，不改动任何沙箱后端。
 - 会话档位的持久化尽力而为（ignorable 插件记录 + 进程内权威 + 下一次 turn 内补写）；极端丢失时门禁自动恢复为「仅工作区内」（fail-safe）。
 
@@ -125,6 +142,7 @@ node scripts/check-compat.mjs     # 对本机 dsh 安装做契约自检
 
 - 旧版的会话级「放飞」开关升级为三档档位：放飞中的旧会话读旧记录自动映射为**完全放开**，未放飞的映射为**仅工作区内**；
 - `alwaysScope` 配置项已移除：询问卡片「总是允许本目录」现在固定写**会话级**条目（在会话页「白名单目录」管理），要全局放行请在 设置 → 通用设置 → Workspace Only 手动添加；profile 的 `cordis.patch.yml` 若显式写过 `alwaysScope`，升级后删掉该行即可；
-- 「总是允许本目录」新写的会话级条目只对同工作区根的会话生效；旧的全局字符串条目保持处处生效。
+- 「总是允许本目录」新写的会话级条目只对同工作区根的会话生效；旧的全局字符串条目保持处处生效；
+- 管理 RPC 有变更（若你有脚本直调 `workspaceOnly/*`）：`setBypass(sessionId, enabled)` → `setScope(sessionId, scope)`（`scope` ∈ `workspace` / `outside-read` / `outside-write`），新增 `addGlobalAlways(dir)`，`snapshot` 的 `sessions[]` 由 `bypass: boolean` 改为 `scope: string`。
 
 设计与 DSH 运行时契约详见 [`docs/increment-plan.md`](docs/increment-plan.md)（含实现中发现的契约出入记录）。
