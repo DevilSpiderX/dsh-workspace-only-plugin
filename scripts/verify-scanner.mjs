@@ -5,7 +5,7 @@
  *
  *   node scripts/verify-scanner.mjs
  */
-import { isPlatformTempTarget, lexicallyWithin, pathReason, shellReason } from "../lib/scanner.js";
+import { expandHomeSpelling, isPlatformTempTarget, lexicallyWithin, pathReason, shellReason } from "../lib/scanner.js";
 
 const posixRoot = "/Volumes/CBR DATA/项目/dsh-workspace-only-plugin";
 const winRoot = "C:\\work\\project";
@@ -58,8 +58,12 @@ const cases = [
 	["findstr main src\\index.js", "OK", winRoot],
 	["git status", "OK", winRoot],
 	["node -e \"console.log('abc/x')\"", "OK", winRoot],
+	// T3: home spellings expand per token; single-quoted words are literals.
+	["echo '$HOME'", "OK", winRoot],
+	["cat $HOME/secret", "FLAG", winRoot],
+	["type $env:USERPROFILE\\x", "FLAG", winRoot],
 	// --- home and $HOME still fire ---
-	["type %USERPROFILE%\\x", "OK", winRoot],
+	["type %USERPROFILE%\\x", "FLAG", winRoot],
 	["type ~\\x", "FLAG", winRoot],
 	["type ~", "FLAG", winRoot],
 	["echo $HOME", "FLAG", winRoot]
@@ -110,6 +114,30 @@ const tempExempt = [
 	["~/dsh-subprocess-x/a.log", "/tmp", false],
 	["dsh-subprocess-x/a.log", tempRootWin, false]
 ];
+/**
+ * Home-spelling expansion (task T3) — [value, env, expectedExpansion].
+ * `undefined` means not home-shaped or unresolvable: the gate then judges it
+ * as-is and keeps home spellings fail-safe outside.
+ */
+const homeExpand = [
+	["~/x", { HOME: "/home/me" }, "/home/me/x"],
+	["~", { HOME: "/home/me" }, "/home/me"],
+	["~\\x", { USERPROFILE: "C:\\Users\\me" }, "C:\\Users\\me\\x"],
+	["$HOME/secret", { HOME: "/home/me" }, "/home/me/secret"],
+	["${HOME}/secret", { HOME: "/home/me" }, "/home/me/secret"],
+	["%USERPROFILE%\\secret", { USERPROFILE: "C:\\Users\\me" }, "C:\\Users\\me\\secret"],
+	["%userprofile%/x", { USERPROFILE: "C:\\Users\\me" }, "C:\\Users\\me/x"],
+	["$env:USERPROFILE\\x", { USERPROFILE: "C:\\Users\\me" }, "C:\\Users\\me\\x"],
+	["$env:HOMEPATH\\x", { USERPROFILE: "C:\\Users\\me" }, "C:\\Users\\me\\x"],
+	["%HOMEPATH%\\x", { HOME: "/home/me" }, "/home/me\\x"],
+	// Not home-shaped at all.
+	["src/x", { HOME: "/home/me" }, void 0],
+	["/etc/passwd", { HOME: "/home/me" }, void 0],
+	// `~user` is somebody else's home — not this spelling set.
+	["~user/x", { HOME: "/home/me" }, void 0],
+	// Unresolvable home (explicit env without HOME/USERPROFILE): fail-safe.
+	["~/x", {}, void 0]
+];
 let pass = 0;
 let total = 0;
 for (const [cmd, expect, root] of cases) {
@@ -125,6 +153,13 @@ for (const [target, root, expectInside] of containment) {
 	const ok = inside === expectInside;
 	if (ok) pass += 1;
 	console.log(`${ok ? "PASS" : "FAIL"}  containment ${JSON.stringify(target)} in ${JSON.stringify(root)} => ${inside ? "inside" : "outside"}`);
+}
+for (const [value, env, expected] of homeExpand) {
+	total += 1;
+	const got = expandHomeSpelling(value, env);
+	const ok = got === expected;
+	if (ok) pass += 1;
+	console.log(`${ok ? "PASS" : "FAIL"}  home-expand ${JSON.stringify(value)} => ${JSON.stringify(got)}`);
 }
 for (const [value, tempRoot, expectExempt] of tempExempt) {
 	total += 1;
