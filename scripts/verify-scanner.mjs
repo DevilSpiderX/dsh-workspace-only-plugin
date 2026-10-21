@@ -5,7 +5,7 @@
  *
  *   node scripts/verify-scanner.mjs
  */
-import { denyMatch, expandHomeSpelling, genericTargets, isPlatformTempTarget, lexicallyWithin, pathReason, sensitiveMatch, shellReason } from "../lib/scanner.js";
+import { denyMatch, expandHomeSpelling, genericTargets, isPlatformTempTarget, lexicallyWithin, pathReason, sameLocation, sensitiveMatch, shellReason } from "../lib/scanner.js";
 
 const posixRoot = "/Volumes/CBR DATA/项目/dsh-workspace-only-plugin";
 const winRoot = "C:\\work\\project";
@@ -191,6 +191,16 @@ const genericCases = [
 	[{ note: "echo a=b and 42" }, []],
 	[{ a: "C:\\outside\\p", b: "C:\\outside\\p" }, ["C:\\outside\\p"]]
 ];
+/**
+ * Workspace-scoped root matching (task T9) — [a, b, expectedSame].
+ */
+const sameCases = [
+	["C:\\work\\project", "C:\\work\\project", true],
+	["C:\\work\\project", "c:\\work\\PROJECT\\", true],
+	["/home/me/project", "/home/me/project", true],
+	["C:\\work\\projectA", "C:\\work\\projectB", false],
+	["", "C:\\work", false]
+];
 let pass = 0;
 let total = 0;
 for (const [cmd, expect, root] of cases) {
@@ -206,6 +216,13 @@ for (const [target, root, expectInside] of containment) {
 	const ok = inside === expectInside;
 	if (ok) pass += 1;
 	console.log(`${ok ? "PASS" : "FAIL"}  containment ${JSON.stringify(target)} in ${JSON.stringify(root)} => ${inside ? "inside" : "outside"}`);
+}
+for (const [a, b, expected] of sameCases) {
+	total += 1;
+	const got = sameLocation(a, b);
+	const ok = got === expected;
+	if (ok) pass += 1;
+	console.log(`${ok ? "PASS" : "FAIL"}  same-location ${JSON.stringify(a)} ~ ${JSON.stringify(b)} => ${got}`);
 }
 for (const [args, expectedPaths] of genericCases) {
 	total += 1;
