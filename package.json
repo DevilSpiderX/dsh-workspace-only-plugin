@@ -22,7 +22,6 @@
     "cordis.patch.yml",
     "README.md",
     "scripts",
-    "install.sh",
     "locale/*.json",
     "icon.svg"
   ],

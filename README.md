@@ -17,19 +17,23 @@ DeepSeek Harness (dsh) 插件：把**任何沙箱模式**（read-only / workspac
 
 ## 安装
 
-**一行安装（推荐）：**
+DSH 0.2 自带完整插件安装器（依赖安装、`dsh.bundle` 校验、版本兼容预检，不兼容会拒装并回滚），任选一条路径：
+
+**方式一：web GUI 安装**
+
+1. 打开 dsh web 的「插件」页；
+2. 「包名或地址」填 `github:CsBpRd/dsh-workspace-only-plugin#main`，点「安装」；
+3. 完成后重启 dsh web（提示「已安装，下次启动后加载」），再打开 Workspace Only 开关。
+
+**方式二：一行 CLI**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/CsBpRd/dsh-workspace-only-plugin/main/install.sh | bash
+dsh plugin --profile web add "github:CsBpRd/dsh-workspace-only-plugin#main"
 ```
 
-脚本自动：`dsh plugin add` 装进 profile → 检测到运行中的 dsh web 则以原命令行重启。环境变量：`DSH_PROFILE`（默认 web）、`DSH_HOME`、`DSH_NO_RESTART=1`。
+然后重启 dsh web（`--profile` 换成你的 profile 名）。
 
-**手动安装：**
-
-1. 在 `~/.dsh/profiles/web/package.json` 的 `dependencies` 加 `"dsh-workspace-only-plugin": "github:CsBpRd/dsh-workspace-only-plugin"`，并在 `dsh.profile.bundles` 末尾追加 `"dsh-workspace-only-plugin"`；
-2. `cd ~/.dsh/profiles/web && pnpm install`；
-3. 重启 dsh web。
+> `github:` 直连不走安装源，机器需能直接访问 GitHub。访问不了时可下载 `.tgz` 后填绝对路径安装；插件若发布到 npm 后也可直接填包名。
 
 **升级 dsh 后**请跑一次自检：`node scripts/check-compat.mjs`（探测审批词汇、pre-execute 词汇、插件记录通道、问答通道、volatile 配置、client 模块表等契约，漂移会打印差异报告）。
 
