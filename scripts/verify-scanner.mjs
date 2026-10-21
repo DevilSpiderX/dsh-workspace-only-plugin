@@ -5,7 +5,7 @@
  *
  *   node scripts/verify-scanner.mjs
  */
-import { lexicallyWithin, pathReason, shellReason } from "../lib/scanner.js";
+import { isPlatformTempTarget, lexicallyWithin, pathReason, shellReason } from "../lib/scanner.js";
 
 const posixRoot = "/Volumes/CBR DATA/项目/dsh-workspace-only-plugin";
 const winRoot = "C:\\work\\project";
@@ -82,6 +82,34 @@ const containment = [
 	["~/x", posixRoot, false]
 ];
 
+/**
+ * Platform-temp exemptions (DSH-generated scratch under `os.tmpdir()`) —
+ * [value, tempRoot, expectedExempt]. Only first-level `dsh-*` / `.dsh-*`
+ * children of the temp root and their subtrees are exempt.
+ */
+const tempRootWin = "C:\\Users\\me\\AppData\\Local\\Temp";
+const tempExempt = [
+	// The runtime's own spill/work directories (subtree included).
+	["C:\\Users\\me\\AppData\\Local\\Temp\\dsh-subprocess-h4mBP1", tempRootWin, true],
+	["C:\\Users\\me\\AppData\\Local\\Temp\\dsh-subprocess-h4mBP1\\dsh-subprocess-1-2-abcdef-stdout.log", tempRootWin, true],
+	["C:\\Users\\me\\AppData\\Local\\Temp\\dsh-spill-A1b2C3\\sess\\x.json", tempRootWin, true],
+	["C:\\Users\\me\\AppData\\Local\\Temp\\dsh-k3D9xQ", tempRootWin, true],
+	["C:\\Users\\me\\AppData\\Local\\Temp\\dsh-shell-Ab12Cd\\work", tempRootWin, true],
+	["c:\\users\\me\\appdata\\local\\temp\\DSH-Subprocess-X\\a.log", tempRootWin, true],
+	["/tmp/dsh-shell-Ab12Cd/out.txt", "/tmp", true],
+	["/tmp/.dsh-mkdir-staging/x", "/tmp", true],
+	// Not exempt: plain files and the root itself stay gated.
+	["C:\\Users\\me\\AppData\\Local\\Temp\\notes.txt", tempRootWin, false],
+	["C:\\Users\\me\\AppData\\Local\\Temp", tempRootWin, false],
+	// Not exempt: a `dsh-*` name deeper down, or anywhere else.
+	["C:\\Users\\me\\AppData\\Local\\Temp\\other-dir\\dsh-subprocess-x", tempRootWin, false],
+	["C:\\tmp\\dsh-subprocess-x\\a.log", tempRootWin, false],
+	["/etc/dsh-subprocess-x/a.log", "/tmp", false],
+	["/tmp/plain/file.txt", "/tmp", false],
+	// Not exempt: non-absolute spellings are judged by the workspace gate.
+	["~/dsh-subprocess-x/a.log", "/tmp", false],
+	["dsh-subprocess-x/a.log", tempRootWin, false]
+];
 let pass = 0;
 let total = 0;
 for (const [cmd, expect, root] of cases) {
@@ -97,6 +125,13 @@ for (const [target, root, expectInside] of containment) {
 	const ok = inside === expectInside;
 	if (ok) pass += 1;
 	console.log(`${ok ? "PASS" : "FAIL"}  containment ${JSON.stringify(target)} in ${JSON.stringify(root)} => ${inside ? "inside" : "outside"}`);
+}
+for (const [value, tempRoot, expectExempt] of tempExempt) {
+	total += 1;
+	const exempt = isPlatformTempTarget(value, tempRoot);
+	const ok = exempt === expectExempt;
+	if (ok) pass += 1;
+	console.log(`${ok ? "PASS" : "FAIL"}  temp-exempt ${JSON.stringify(value)} in ${JSON.stringify(tempRoot)} => ${exempt ? "exempt" : "gated"}`);
 }
 {
 	// pathReason keeps the workspace-safe path silent and flags home/escapes.
