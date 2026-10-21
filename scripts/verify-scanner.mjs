@@ -5,7 +5,7 @@
  *
  *   node scripts/verify-scanner.mjs
  */
-import { denyMatch, expandHomeSpelling, genericTargets, isPlatformTempTarget, lexicallyWithin, pathReason, sameLocation, sensitiveMatch, shellReason } from "../lib/scanner.js";
+import { denyMatch, expandHomeSpelling, genericTargets, isPlatformTempTarget, lexicallyWithin, pathReason, sameLocation, sensitiveMatch, shellReason, toolAccessKind } from "../lib/scanner.js";
 
 const posixRoot = "/Volumes/CBR DATA/项目/dsh-workspace-only-plugin";
 const winRoot = "C:\\work\\project";
@@ -265,6 +265,14 @@ for (const [value, tempRoot, expectExempt] of tempExempt) {
 	const ok = pathReason("src\\a.txt", winRoot, "write target") === undefined && pathReason("~\\x", winRoot, "write target") !== void 0 && pathReason("C:\\tmp\\x", winRoot, "write target") !== void 0;
 	if (ok) pass += 1;
 	console.log(`${ok ? "PASS" : "FAIL"}  pathReason mixed verdicts`);
+}
+for (const [name, expected] of [["read", "read"], ["read_image", "read"], ["glob", "read"], ["grep", "read"], ["write", "write"], ["edit", "write"], ["bash", "write"], ["pwsh", "write"], ["mcp-fs-write", "write"], ["", "write"]]) {
+	// toolAccessKind: pure readers read, writers AND shells/unknown tools write.
+	total += 1;
+	const got = toolAccessKind(name);
+	const ok = got === expected;
+	if (ok) pass += 1;
+	console.log(`${ok ? "PASS" : "FAIL"}  access-kind ${JSON.stringify(name)} => ${got}`);
 }
 console.log(`${pass}/${total} passed`);
 if (pass !== total) process.exitCode = 1;
