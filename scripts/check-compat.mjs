@@ -17,7 +17,10 @@
  *   5. `dsh-api-remotes` forwarded-event allowlist (approval/request, user-questions/request);
  *   6. `schemastery` `.volatile()` fields (the E1 configuration channel);
  *   7. client module table requests (every `require()` in lib/client.js must
- *      be one the shipped client bundles already make).
+ *      be one the shipped client bundles already make);
+ *  11. `dsh-sandbox`/`dsh-sandbox-policy` escalation semantics the task-T1
+ *      skip condition relies on (repeated-mode pass-through, wider ladder,
+ *      `ctx.sandboxPolicy` resolution).
  */
 import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -207,6 +210,22 @@ function main() {
 		const requested = [...mine.matchAll(/require\("([^"]+)"\)/g)].map((match) => match[1]);
 		const unknown = requested.filter((spec) => !baseline.has(spec));
 		record(baseline.size > 0 && unknown.length === 0, "client module table requests", baseline.size === 0 ? "no shipped client bundle found to derive the platform seed baseline" : unknown.length === 0 ? void 0 : `lib/client.js requires ${unknown.map((value) => JSON.stringify(value)).join(", ")} which no shipped client bundle requests — likely absent from the frozen platform module table (dsh-client-modules README: PLATFORM_MODULES + dsh.client.external)`);
+	}
+
+	// 11. dsh-sandbox / dsh-sandbox-policy escalation semantics (task T1): the
+	//     repeated-mode no-prompt pass-through, the strictly-wider ladder, and
+	//     the policy service the skip condition resolves the standing mode from.
+	{
+		const found = locate("dsh-sandbox", "lib/index.js", roots);
+		const policy = locate("dsh-sandbox-policy", "lib/index.js", roots);
+		if (found === void 0) {
+			record(false, "escalation semantics (T1)", "dsh-sandbox not found in any source root — the T1 skip condition cannot be verified");
+		} else {
+			const shapes = ["const WIDER_MODES", "const ESCALATION_TARGETS", "if (mode === effectiveMode) return effectiveMode;", "function validateEscalationArgs"];
+			const policyShapes = policy === void 0 ? ['"sandboxPolicy" service'] : ['super(ctx, "sandboxPolicy")', "overrideOf"];
+			const gone = [...shapes.filter((needle) => !found.text.includes(needle)), ...(policy === void 0 ? policyShapes : policyShapes.filter((needle) => !policy.text.includes(needle)))];
+			record(gone.length === 0, "escalation semantics (T1)", gone.length === 0 ? void 0 : `escalation contract drifted: missing ${gone.join(", ")} — re-verify the lib/index.js skip condition before trusting it`);
+		}
 	}
 
 	for (const title of passes) console.log(`PASS  ${title}`);
