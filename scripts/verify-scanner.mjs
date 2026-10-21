@@ -5,7 +5,7 @@
  *
  *   node scripts/verify-scanner.mjs
  */
-import { expandHomeSpelling, isPlatformTempTarget, lexicallyWithin, pathReason, sensitiveMatch, shellReason } from "../lib/scanner.js";
+import { denyMatch, expandHomeSpelling, isPlatformTempTarget, lexicallyWithin, pathReason, sensitiveMatch, shellReason } from "../lib/scanner.js";
 
 const posixRoot = "/Volumes/CBR DATA/项目/dsh-workspace-only-plugin";
 const winRoot = "C:\\work\\project";
@@ -162,6 +162,21 @@ const sensitiveCases = [
 	["C:\\work\\project\\.env", { patterns: ["*.env"] }, "*.env"],
 	["/home/me/secrets/id_ed25519.pub", { patterns: ["id_ed25519*"] }, "id_ed25519*"]
 ];
+/**
+ * Deny rules (task T5) — [value, denyList, expectedHitRule]. A trailing
+ * separator means directory-prefix containment, otherwise a full-path glob.
+ */
+const denyCases = [
+	["C:\\secret\\a.txt", ["C:\\secret\\"], "C:\\secret\\"],
+	["C:\\other\\a.txt", ["C:\\secret\\"], void 0],
+	["/etc/passwd", ["/etc/"], "/etc/"],
+	["/etc/passwd", ["*.pem"], void 0],
+	["C:\\work\\project\\x.pem", ["*.pem"], "*.pem"],
+	["/home/me/secrets/id_rsa", ["*/secrets/*"], "*/secrets/*"],
+	["~/secret/a.txt", ["~/secret/"], "~/secret/"],
+	["C:\\work\\project\\a.txt", [], void 0],
+	["C:\\work\\project\\a.txt", [""], void 0]
+];
 let pass = 0;
 let total = 0;
 for (const [cmd, expect, root] of cases) {
@@ -177,6 +192,13 @@ for (const [target, root, expectInside] of containment) {
 	const ok = inside === expectInside;
 	if (ok) pass += 1;
 	console.log(`${ok ? "PASS" : "FAIL"}  containment ${JSON.stringify(target)} in ${JSON.stringify(root)} => ${inside ? "inside" : "outside"}`);
+}
+for (const [value, denyList, expected] of denyCases) {
+	total += 1;
+	const got = denyMatch(value, denyList);
+	const ok = got === expected;
+	if (ok) pass += 1;
+	console.log(`${ok ? "PASS" : "FAIL"}  deny ${JSON.stringify(value)} vs ${JSON.stringify(denyList)} => ${JSON.stringify(got)}`);
 }
 for (const [value, config, expected] of sensitiveCases) {
 	total += 1;

@@ -50,6 +50,7 @@ dsh plugin --profile web add "github:CsBpRd/dsh-workspace-only-plugin#main"
 | `sensitivePatterns` | `["*.env","*.env.*","*.pem","*.key","*.p12","*.pfx","id_rsa*","id_ed25519*"]` | 敏感文件 basename glob：**工作区内也弹三键** |
 | `sensitiveAllowPatterns` | `["*.env.example","*.env.sample","*.env.template","*.env.defaults"]` | 敏感豁免（优先于 `sensitivePatterns`，如 `.env.example` 不弹） |
 | `sensitiveAlways` | `[]` | "总是允许此类文件"持久化的 pattern（运行时可写，`.volatile()`；与目录白名单**正交**，"总是允许本目录"不会放行敏感文件） |
+| `deny` | `[]` | **永不放行**规则：以 `/` 或 `\` 结尾按目录前缀、否则按 glob 全路径匹配（运行时可写，`.volatile()`）；命中直接拒绝、不弹窗、**优先级最高** |
 | `renamePresetLabel` | `false` | 把 `workspace-write` 预设显示名改为 "Write Only"；开启后与 `@nanmicoder/dsh-auto-mode` 的标签匹配可能冲突 |
 | `dialogTimeoutMs` | `120000` | 三键问题的等待上限，超时按拒绝处理 |
 
@@ -78,6 +79,8 @@ dsh plugin --profile web add "github:CsBpRd/dsh-workspace-only-plugin#main"
 | **danger-full-access** | **核心用例**：官方无任何围栏，但越界读/写/搜索/shell **全部弹三键**（approval policy 为 `never` 也照弹）；批准后完全放行 | **⚠️ 完全裸奔**：无围栏、无门禁，代理可读写任意路径 |
 
 通用规则（所有格子适用）：
+
+- **deny 规则**优先级最高：命中直接拒绝、不弹窗，压过白名单、会话放飞、总开关与平台临时区豁免（设置页可管理）；
 
 - **会话放飞**优先级最高：放飞的会话直接跳过门禁（等效该会话"关"），其他会话不受影响；
 - **白名单目录**（"总是允许本目录"）内免弹，等效工作区内；
