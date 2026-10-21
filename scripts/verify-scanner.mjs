@@ -62,6 +62,14 @@ const cases = [
 	["echo '$HOME'", "OK", winRoot],
 	["cat $HOME/secret", "FLAG", winRoot],
 	["type $env:USERPROFILE\\x", "FLAG", winRoot],
+	// T7: assignment/option-value `=` forms were completely missed before.
+	["FOO=/etc/secret node app.js", "FLAG", winRoot],
+	["tool --out=C:\\x", "FLAG", winRoot],
+	["tool --out=/etc/x", "FLAG", winRoot],
+	// T7 false-positive guards: plain values and URL shapes stay quiet.
+	["awk '{print $1}'", "OK", winRoot],
+	["echo a=b", "OK", winRoot],
+	["curl -d a=b https://x/y", "OK", winRoot],
 	// --- home and $HOME still fire ---
 	["type %USERPROFILE%\\x", "FLAG", winRoot],
 	["type ~\\x", "FLAG", winRoot],
