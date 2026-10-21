@@ -54,6 +54,8 @@ dsh plugin --profile web add "github:CsBpRd/dsh-workspace-only-plugin#main"
 | `renamePresetLabel` | `false` | 把 `workspace-write` 预设显示名改为 "Write Only"；开启后与 `@nanmicoder/dsh-auto-mode` 的标签匹配可能冲突 |
 | `dialogTimeoutMs` | `120000` | 三键问题的等待上限，超时按拒绝处理 |
 | `fastDenyMs` | `0` | 非交互快速 fail-closed 预算（毫秒）：`>0` 时无应答渠道（无 UI）的调用在该预算内直接拒绝、不走系统弹窗兜底；`0` 保持完整回退链 |
+| `scanAllTools` | `false` | 全量保守扫描（opt-in）：白名单 8 工具之外的工具也按参数里的路径形状判定（可能对含路径样文本的参数误报） |
+| `scanIgnoreTools` | `[]` | 保守扫描的工具豁免名单（误报逃生舱） |
 
 手动编辑示例（profile 的 `cordis.patch.yml` 追加）：
 
@@ -102,6 +104,7 @@ dsh plugin --profile web add "github:CsBpRd/dsh-workspace-only-plugin#main"
 ## 边界与残余面
 
 - 收编是**工具层词法门禁**，非内核隔离。home 形态（`~`/`$HOME`/`${HOME}`/`%USERPROFILE%`/`%HOMEPATH%`/`$env:USERPROFILE`/`$env:HOMEPATH`）已统一展开为真实路径判定（单引号内的字面量除外）；扫描器看不到的路径（完全动态计算、其他环境变量拼接）是文档化的残余面，与 auto-mode 插件同级哲学。
+- 默认只精确扫描 8 个工具（`read`/`write`/`edit`/`read_image`/`glob`/`grep`/`bash`/`pwsh`，误报低）；MCP/插件注册的其他工具默认不设防。开启 `scanAllTools` 进入全量保守模式：任何工具参数里的路径形状值都判定（含 shell 内相对敏感路径之外的场景），可配合 `scanIgnoreTools` 豁免误报工具。
 - 在 workspace-write 会话，批准后的越界**写**仍受进程内写围栏拦截（`FS_SANDBOX_DENIED`），随后走 dsh 既有 `sandbox_permissions` 升权再确认一次——写操作始终需要明确同意；携带 `sandbox_permissions` 的调用仅在官方升权弹窗必现（目标模式严格宽于会话当前模式）时跳过本插件门禁（避免双弹窗），重复/畸形升权照走三键。
 - 三键卡片渲染依赖 Web 端（`conversation.composer` 槽位接管）；无 Web 客户端时回退通用问题卡片（TUI 等）→ 官方审批弹窗。卡片超时视为拒绝。设置 `fastDenyMs > 0` 可让无应答渠道的调用（后台/无 UI）秒级拒绝而不挂满超时（`fast-deny` 审计通道）。
 - 沙箱执行约束全部沿用官方（含 win32 的 ACL 受限令牌 runner 与 `dsh-fs-sandbox` 写围栏）：本插件只在工具层加门禁，不改动任何沙箱后端。

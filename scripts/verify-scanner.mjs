@@ -5,7 +5,7 @@
  *
  *   node scripts/verify-scanner.mjs
  */
-import { denyMatch, expandHomeSpelling, isPlatformTempTarget, lexicallyWithin, pathReason, sensitiveMatch, shellReason } from "../lib/scanner.js";
+import { denyMatch, expandHomeSpelling, genericTargets, isPlatformTempTarget, lexicallyWithin, pathReason, sensitiveMatch, shellReason } from "../lib/scanner.js";
 
 const posixRoot = "/Volumes/CBR DATA/项目/dsh-workspace-only-plugin";
 const winRoot = "C:\\work\\project";
@@ -177,6 +177,20 @@ const denyCases = [
 	["C:\\work\\project\\a.txt", [], void 0],
 	["C:\\work\\project\\a.txt", [""], void 0]
 ];
+/**
+ * Generic argument scan (task T8) — [args, expectedCollectedPaths]. Only
+ * path-shaped leaves are collected; plain text and over-long values skip.
+ */
+const genericCases = [
+	[{ file_path: "C:\\outside\\x" }, ["C:\\outside\\x"]],
+	[{ note: "just some text" }, []],
+	[{ nested: { deep: { path: "/etc/passwd" } } }, ["/etc/passwd"]],
+	[{ list: ["a", "C:\\outside\\y"] }, ["C:\\outside\\y"]],
+	[{ big: "C:\\outside\\z" + "x".repeat(5000) }, []],
+	[{ rel: "src/x" }, []],
+	[{ note: "echo a=b and 42" }, []],
+	[{ a: "C:\\outside\\p", b: "C:\\outside\\p" }, ["C:\\outside\\p"]]
+];
 let pass = 0;
 let total = 0;
 for (const [cmd, expect, root] of cases) {
@@ -192,6 +206,13 @@ for (const [target, root, expectInside] of containment) {
 	const ok = inside === expectInside;
 	if (ok) pass += 1;
 	console.log(`${ok ? "PASS" : "FAIL"}  containment ${JSON.stringify(target)} in ${JSON.stringify(root)} => ${inside ? "inside" : "outside"}`);
+}
+for (const [args, expectedPaths] of genericCases) {
+	total += 1;
+	const got = genericTargets({ name: "mcp__unknown__tool", arguments: args }, winRoot).map((entry) => entry.path);
+	const ok = JSON.stringify(got) === JSON.stringify(expectedPaths);
+	if (ok) pass += 1;
+	console.log(`${ok ? "PASS" : "FAIL"}  generic ${JSON.stringify(Object.keys(args))} => ${JSON.stringify(got)}`);
 }
 for (const [value, denyList, expected] of denyCases) {
 	total += 1;
