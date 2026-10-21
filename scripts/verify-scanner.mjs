@@ -5,7 +5,7 @@
  *
  *   node scripts/verify-scanner.mjs
  */
-import { expandHomeSpelling, isPlatformTempTarget, lexicallyWithin, pathReason, shellReason } from "../lib/scanner.js";
+import { expandHomeSpelling, isPlatformTempTarget, lexicallyWithin, pathReason, sensitiveMatch, shellReason } from "../lib/scanner.js";
 
 const posixRoot = "/Volumes/CBR DATA/项目/dsh-workspace-only-plugin";
 const winRoot = "C:\\work\\project";
@@ -146,6 +146,22 @@ const homeExpand = [
 	// Unresolvable home (explicit env without HOME/USERPROFILE): fail-safe.
 	["~/x", {}, void 0]
 ];
+/**
+ * Sensitive-file matching (task T4) — [value, config, expectedMatchedPattern].
+ * Matching is basename-based; `allowPatterns` and `alwaysPatterns` exempt.
+ */
+const sensitiveCases = [
+	[".env", { patterns: ["*.env", "*.env.*"], allowPatterns: ["*.env.example"] }, "*.env"],
+	["app.env.local", { patterns: ["*.env", "*.env.*"], allowPatterns: ["*.env.example"] }, "*.env.*"],
+	[".env.example", { patterns: ["*.env", "*.env.*"], allowPatterns: ["*.env.example"] }, void 0],
+	["prod.env.sample", { patterns: ["*.env", "*.env.*"], allowPatterns: ["*.env.sample"] }, void 0],
+	[".env", { patterns: ["*.env"], allowPatterns: [], alwaysPatterns: ["*.env"] }, void 0],
+	["server.pem", { patterns: ["*.pem"] }, "*.pem"],
+	["id_rsa", { patterns: ["id_rsa*"] }, "id_rsa*"],
+	["notes.txt", { patterns: ["*.env", "*.pem"] }, void 0],
+	["C:\\work\\project\\.env", { patterns: ["*.env"] }, "*.env"],
+	["/home/me/secrets/id_ed25519.pub", { patterns: ["id_ed25519*"] }, "id_ed25519*"]
+];
 let pass = 0;
 let total = 0;
 for (const [cmd, expect, root] of cases) {
@@ -161,6 +177,13 @@ for (const [target, root, expectInside] of containment) {
 	const ok = inside === expectInside;
 	if (ok) pass += 1;
 	console.log(`${ok ? "PASS" : "FAIL"}  containment ${JSON.stringify(target)} in ${JSON.stringify(root)} => ${inside ? "inside" : "outside"}`);
+}
+for (const [value, config, expected] of sensitiveCases) {
+	total += 1;
+	const got = sensitiveMatch(value, config)?.pattern;
+	const ok = got === expected;
+	if (ok) pass += 1;
+	console.log(`${ok ? "PASS" : "FAIL"}  sensitive ${JSON.stringify(value)} => ${JSON.stringify(got)}`);
 }
 for (const [value, env, expected] of homeExpand) {
 	total += 1;
