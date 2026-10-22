@@ -59,6 +59,7 @@ dsh plugin --profile web add "github:CsBpRd/dsh-workspace-only-plugin#main"
 | `fastDenyMs` | `0` | 非交互快速 fail-closed 预算（毫秒）：`>0` 时无应答渠道（无 UI）的调用在该预算内直接拒绝、不走系统弹窗兜底；`0` 保持完整回退链 |
 | `scanAllTools` | `false` | 全量保守扫描（opt-in）：白名单 8 工具之外的工具也按参数里的路径形状判定（可能对含路径样文本的参数误报） |
 | `scanIgnoreTools` | `[]` | 保守扫描的工具豁免名单（误报逃生舱） |
+| `realpathCheck` | `false` | realpath 复核（opt-in，T11）：对词法判「工作区内」的路径做一次 `fs.realpath` 复核，工作区内符号链接指向区外时改判越界、照走三键；每条目一次同步 fs 调用（性能代价），解析失败按越界询问（fail-closed） |
 
 手动编辑示例（profile 的 `cordis.patch.yml` 追加）：
 
@@ -125,6 +126,7 @@ dsh plugin --profile web add "github:CsBpRd/dsh-workspace-only-plugin#main"
 ## 边界与残余面
 
 - 收编是**工具层词法门禁**，非内核隔离。home 形态（`~`/`$HOME`/`${HOME}`/`%USERPROFILE%`/`%HOMEPATH%`/`$env:USERPROFILE`/`$env:HOMEPATH`）已统一展开为真实路径判定（单引号内的字面量除外）；扫描器看不到的路径（完全动态计算、其他环境变量拼接）是文档化的残余面，与 auto-mode 插件同级哲学。
+- 词法围栏**默认不解析符号链接**（残余面，T11）：工作区内符号链接指向区外时，路径仍是「工作区内」词法字符串 → 不拦截，底层 fs 操作会跟随链接越界——与 MiMo `AppFileSystem.contains` 同哲学（两边一致）。开启 `realpathCheck` 后，命中「工作区内」的路径经 `fs.realpath` 复核（对尚不存在的目标取最深存在祖先 canonicalize 后重拼余段，覆盖「写新文件、父目录是链接」场景；root 与目标双方都解析，macOS `/tmp`→`/private/tmp` 不误拒）：解析到区外改判越界照走三键，解析失败 fail-closed 按越界询问。残余面收窄但仍存：**白名单 / deny 规则仍按词法路径匹配**（链接路径与其真身不互通）。
 - 默认只精确扫描 8 个工具（`read`/`write`/`edit`/`read_image`/`glob`/`grep`/`bash`/`pwsh`，误报低）；MCP/插件注册的其他工具默认不设防。开启 `scanAllTools` 进入全量保守模式：任何工具的参数里出现路径形状值都会判定，配合 `scanIgnoreTools` 豁免误报工具；shell 命令内的**相对**敏感路径（如 `cat .env`）不在词法扫描范围内。
 - 在 workspace-write 会话，批准后的越界**写**仍受进程内写围栏拦截（`FS_SANDBOX_DENIED`），随后走 dsh 既有 `sandbox_permissions` 升权再确认一次——写操作始终需要明确同意；携带 `sandbox_permissions` 的调用仅在官方升权弹窗必现（目标模式严格宽于会话当前模式）时跳过本插件门禁（避免双弹窗），重复/畸形升权照走三键。
 - 三键卡片渲染依赖 Web 端（`conversation.composer` 槽位接管）；无 Web 客户端时回退通用问题卡片（TUI 等）→ 官方审批弹窗。卡片超时视为拒绝。设置 `fastDenyMs > 0` 可让无应答渠道的调用（后台/无 UI）秒级拒绝而不挂满超时（`fast-deny` 审计通道）。
