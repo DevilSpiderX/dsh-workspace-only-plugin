@@ -50,6 +50,7 @@ node tmp/smoke/run.mjs            # 端到端 smoke（stub dsh 包 + 真 schemas
 - **不声明 `peerDependencies` 是有意的**：DSH 内部包以 prerelease（`0.2.1-rc.2`）演进，任何 semver 范围都会误报不兼容；兼容性只信 `check-compat.mjs`。
 - **`.volatile()` 配置字段**（`enabled`/`always`/`sensitiveAlways`/`deny`）与设置表单共享同一实时引用，运行时写回走设置服务——别深拷贝。**集合元素的形状必须被 Config schema 收纳**：`always` 两种条目（字符串=全局、`{root, dir}`=会话级）都在 `z.union` 里；只声明过 `z.string()` 的那版会让每次 `{root, dir}` 写回被 schemastery 打回，症状极具误导性——卡片「总是允许该目录」静默降级为仅此一次（`grant()` 的 catch 吞掉错误）、白名单视图添加无反应，而设置页的全局添加（字符串）照常工作。新增条目形状先改 schema。
 - **`LABELS.*` 既是文案又是匹配键**（`lib/ask.js`）：回退问答 `choiceFromAnswer` 按 label 反查 choice——改文案只动常量即自洽，别把匹配逻辑改成硬编码字符串；smoke 的 `questionChoice` 引 `LABELS.always`。
+- **平台 pending 投影每 session 只有一个席位**（`ui-session` 的 `publishPendingInteractions` 按 `sessionId` 取胜者）：同 session 并发多个 pending interaction 会互相遮蔽，答掉可见的那张只是让下一张补位——用户看到的正是「三键卡片点了不关」。子代理并行工具调用天然同 session 并发，所以 `ask.js` 的 `askOutside` **按 session 串行**（队列 + 出队白名单重查，承接 T2 批量放行语义）；且 Host 结算（超时/批量放行/多端作答）后必须广播 `askDone`（仍走 `settings/document-updated` 白名单事件）让各端 `closePanel` 撤卡，否则残留卡片永远留在 composer。客户端席位按 `requestId` 去重——重复 ask 负载会撞平台的 `duplicate pending interaction key`。
 - **Windows 一等公民**：路径包含判定对 win 形态用 `path.win32` 语义（大小写不敏感）；盘符、UNC、`..\`、反斜杠转义、`%USERPROFILE%`/`$env:USERPROFILE` 都要扫到。改扫描先看 `verify-scanner.mjs` 的 false-positive 对照组。
 - **失败方向永远 fail-closed**：超时=拒、无应答渠道=拒（`fastDenyMs>0` 时秒拒）、档位记录丢失=最严档。别改成 fail-open。
 - 环境变量 `WORKSPACE_ONLY_PRESENCE_WAIT_MS` 缩短 presence 等待（smoke 用）。
