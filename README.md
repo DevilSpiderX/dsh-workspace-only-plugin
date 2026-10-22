@@ -74,6 +74,14 @@ dsh plugin --profile web add "github:CsBpRd/dsh-workspace-only-plugin#main"
 
 注意：patch 的 override 语义是**整体替换** `config`，写 override 时带上需要的全部字段。
 
+### 内置默认白名单（不占配置字段）
+
+除配置里的 `always` 外，还有一条**内置默认**白名单：`<DSH_HOME>/dsh-runtimes/dsh-primary-runtime` 目录树始终按**全局条目**放行（等效设置页条目，处处生效）。
+
+- 该目录就是 Desktop 把随附 Python/Node/pnpm 分发包安装进去的目标根（宿主 `desktop-host` 的 `root: join(resolveDshHome(), 'dsh-runtimes', 'dsh-primary-runtime')`）；home 解析逐条对齐宿主 `resolveDshHome()`（`@deepseek-ai/dsh-home-paths`）：`$DSH_HOME` **非空白**时以它为准（空白值按未设置处理，`~`/`~/`/`~\` 拼写展开，结果解析为绝对路径），否则回退 `~/.dsh`；条目在**每次判定时**从环境解析，不写死绝对路径、不持久化进 `cordis.patch.yml`，换机器/换用户自动适配（`check-compat.mjs` probe 12 盯住该契约的漂移）；
+- 设置页「默认白名单（内置）」分组只读展示**本机解析结果**，不可移除（要收紧请用 deny 规则，它优先级更高）；
+- 只放行**越界维度**：deny 规则仍优先压过它；敏感文件（`sensitivePatterns`）照旧弹三键，与目录白名单正交的语义不变。
+
 ## 与 auto 插件共存
 
 `renamePresetLabel` 默认 `false`，本插件不再改预设名，与 `@nanmicoder/dsh-auto-mode` 零冲突（也不再需要它的标签补丁）。若显式开启改名，auto 插件按标签匹配权限菜单的逻辑需要自行适配。
@@ -106,7 +114,7 @@ dsh plugin --profile web add "github:CsBpRd/dsh-workspace-only-plugin#main"
 
 - **deny 规则**优先级最高：命中直接拒绝、不弹窗，压过白名单、会话档位、总开关与平台临时区豁免（设置页可管理）；
 - **会话档位**（composer 旁选择框）决定越界读写要不要问：**仅工作区内**=越界读写都问；**工作区外只读**=越界读放行、越界写问（shell 保守按写）；**完全放开**=越界读写都放行。档位与白名单是**叠加放行**（任一放行即免弹），但压不过 deny 规则，且只影响越界维度；
-- **白名单目录**内免弹，等效工作区内：全局条目（设置页）处处生效；会话级条目（`{root, dir}`，会话页「白名单目录」）仅同工作区根的会话生效；询问卡片「总是允许本目录」写入**会话级**条目；
+- **白名单目录**内免弹，等效工作区内：全局条目（设置页）处处生效；会话级条目（`{root, dir}`，会话页「白名单目录」）仅同工作区根的会话生效；询问卡片「总是允许本目录」写入**会话级**条目；另有**内置默认条目** `<DSH_HOME>/dsh-runtimes/dsh-primary-runtime`（每次判定实时解析，处处生效、不可删除，见「内置默认白名单」）；
 - **敏感文件**（`sensitivePatterns` 命中的 basename）**工作区内也弹三键，且不受会话档位影响**（「完全放开」档也弹）：一次调用既越界又敏感只弹一次（原因合并）；"总是允许此类文件"按 **pattern** 持久化（`sensitiveAlways`），与目录白名单正交——"总是允许本目录"不会放行敏感文件；
 - **平台临时区**默认免弹：`%TEMP%`/`os.tmpdir()` 下 `dsh-*` 或 `.dsh-*` 一级子目录（含子树）是 DSH 自己生成的落盘目录——`dsh-subprocess-*`（子进程大输出 spill）、`dsh-spill-*`（工具结果溢出）、`dsh-*`（沙箱受限进程的私有 TEMP）等，工具跟随 `spillPath` 或展开 `%TEMP%` 时不再询问；临时根本身、其下普通文件、其他位置的同名前缀目录照旧弹；
 - 带 `sandbox_permissions` 的升权调用**仅当目标模式严格宽于会话当前模式**（官方升权弹窗必现）时才跳过门禁（避免双弹窗）；重复（等于当前模式）或畸形的升权请求在官方侧**零弹窗**直接放行/报错，一律照走三键门禁，堵死"重复升权绕过"；

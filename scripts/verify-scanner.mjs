@@ -5,7 +5,9 @@
  *
  *   node scripts/verify-scanner.mjs
  */
-import { denyMatch, expandHomeSpelling, genericTargets, isPlatformTempTarget, lexicallyWithin, pathReason, sameLocation, sensitiveMatch, shellReason, toolAccessKind } from "../lib/scanner.js";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { builtinAlwaysDirs, denyMatch, expandHomeSpelling, genericTargets, isPlatformTempTarget, lexicallyWithin, pathReason, sameLocation, sensitiveMatch, shellReason, toolAccessKind } from "../lib/scanner.js";
 
 const posixRoot = "/Volumes/CBR DATA/项目/dsh-workspace-only-plugin";
 const winRoot = "C:\\work\\project";
@@ -147,6 +149,26 @@ const homeExpand = [
 	["~/x", {}, void 0]
 ];
 /**
+ * The built-in DEFAULT whitelist — [env, expectedDirs]. The DSH runtime
+ * directory follows `DSH_HOME`, else `~/.dsh`; the join keeps the HOME's own
+ * separator semantics on any host platform.
+ */
+const fallbackBuiltin = [join(homedir(), ".dsh", "dsh-runtimes", "dsh-primary-runtime")];
+const builtinCases = [
+	[{ DSH_HOME: "C:\\Users\\me\\.dsh" }, ["C:\\Users\\me\\.dsh\\dsh-runtimes\\dsh-primary-runtime"]],
+	[{ DSH_HOME: "C:\\Users\\me\\.dsh\\" }, ["C:\\Users\\me\\.dsh\\dsh-runtimes\\dsh-primary-runtime"]],
+	[{ DSH_HOME: "/home/me/.dsh" }, ["/home/me/.dsh/dsh-runtimes/dsh-primary-runtime"]],
+	// Unset (or empty) DSH_HOME: the host's own `~/.dsh` fallback.
+	[{}, fallbackBuiltin],
+	[{ DSH_HOME: "" }, fallbackBuiltin],
+	// Blank is UNSET too (host rule: a blank override must never resolve the
+	// home to the working directory).
+	[{ DSH_HOME: "   " }, fallbackBuiltin],
+	// Tilde spellings expand like the host's `expandHomePath`.
+	[{ DSH_HOME: "~/.dsh" }, fallbackBuiltin],
+	[{ DSH_HOME: "~" }, [join(homedir(), "dsh-runtimes", "dsh-primary-runtime")]]
+];
+/**
  * Sensitive-file matching (task T4) — [value, config, expectedMatchedPattern].
  * Matching is basename-based; `allowPatterns` and `alwaysPatterns` exempt.
  */
@@ -251,6 +273,22 @@ for (const [value, env, expected] of homeExpand) {
 	const ok = got === expected;
 	if (ok) pass += 1;
 	console.log(`${ok ? "PASS" : "FAIL"}  home-expand ${JSON.stringify(value)} => ${JSON.stringify(got)}`);
+}
+for (const [env, expected] of builtinCases) {
+	total += 1;
+	const got = builtinAlwaysDirs(env);
+	const ok = JSON.stringify(got) === JSON.stringify(expected);
+	if (ok) pass += 1;
+	console.log(`${ok ? "PASS" : "FAIL"}  builtin ${JSON.stringify(env.DSH_HOME ?? "(unset)")} => ${JSON.stringify(got)}`);
+}
+{
+	// The built-in runtime dir covers its subtree (case-insensitive on
+	// Windows) and nothing beside it: siblings under $DSH_HOME stay gated.
+	total += 1;
+	const [dir] = builtinAlwaysDirs({ DSH_HOME: "C:\\Users\\me\\.dsh" });
+	const ok = lexicallyWithin("c:\\users\\me\\.dsh\\DSH-Runtimes\\dsh-primary-runtime\\bin\\x.exe", dir) && lexicallyWithin("C:\\Users\\me\\.dsh\\dsh-runtimes\\dsh-primary-runtime", dir) && !lexicallyWithin("C:\\Users\\me\\.dsh\\profiles\\desktop\\x", dir) && !lexicallyWithin("C:\\Users\\me\\.dsh\\dsh-runtimes\\other\\x", dir);
+	if (ok) pass += 1;
+	console.log(`${ok ? "PASS" : "FAIL"}  builtin subtree coverage`);
 }
 for (const [value, tempRoot, expectExempt] of tempExempt) {
 	total += 1;

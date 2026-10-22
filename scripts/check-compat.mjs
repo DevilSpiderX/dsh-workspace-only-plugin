@@ -20,7 +20,9 @@
  *      be one the shipped client bundles already make);
  *  11. `dsh-sandbox`/`dsh-sandbox-policy` escalation semantics the task-T1
  *      skip condition relies on (repeated-mode pass-through, wider ladder,
- *      `ctx.sandboxPolicy` resolution).
+ *      `ctx.sandboxPolicy` resolution);
+ *  12. `dsh-home-paths` home resolution the built-in default whitelist relies
+ *      on (non-blank `$DSH_HOME`, blank-unset, tilde expansion, resolve).
  */
 import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -225,6 +227,21 @@ function main() {
 			const policyShapes = policy === void 0 ? ['"sandboxPolicy" service'] : ['super(ctx, "sandboxPolicy")', "overrideOf"];
 			const gone = [...shapes.filter((needle) => !found.text.includes(needle)), ...(policy === void 0 ? policyShapes : policyShapes.filter((needle) => !policy.text.includes(needle)))];
 			record(gone.length === 0, "escalation semantics (T1)", gone.length === 0 ? void 0 : `escalation contract drifted: missing ${gone.join(", ")} — re-verify the lib/index.js skip condition before trusting it`);
+		}
+	}
+
+	// 12. dsh-home-paths home resolution (the built-in default whitelist
+	//     resolves the harness home the same way): non-blank `$DSH_HOME` wins,
+	//     blank counts as unset, `~` spellings expand, and the result resolves
+	//     to an absolute path.
+	{
+		const found = locate("dsh-home-paths", "lib/index.js", roots);
+		if (found === void 0) {
+			record(false, "home resolution (builtin whitelist)", "dsh-home-paths not found in any source root — the builtinAlwaysDirs home resolution cannot be verified");
+		} else {
+			const shapes = ["function resolveDshHome(", "function expandHomePath(", "fromEnv.trim().length > 0", "return resolve(expandHomePath("];
+			const gone = shapes.filter((needle) => !found.text.includes(needle));
+			record(gone.length === 0, "home resolution (builtin whitelist)", gone.length === 0 ? void 0 : `home-path contract drifted in ${found.origin}: missing ${gone.join(", ")} — re-verify lib/scanner.js builtinAlwaysDirs before trusting the built-in whitelist`);
 		}
 	}
 
