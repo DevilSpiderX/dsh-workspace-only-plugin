@@ -245,6 +245,25 @@ function main() {
 		}
 	}
 
+	// 13. T13 notice-surface contracts: the session-header utilities slot the
+	//     badge rides, the shell.overlay float surface the toast rides, the
+	//     uiWorkspace.openSession navigation the badge click-through uses, and
+	//     the shared Toast primitive.
+	{
+		const conversation = locate("dsh-client-ui-conversation", "lib/client.js", roots);
+		const layout = locate("dsh-client-ui-layout", "lib/client.js", roots);
+		const workspace = locate("dsh-client-ui-workspace", "lib/client.js", roots);
+		const primitives = locate("dsh-client-ui-primitives", "lib/client.js", roots);
+		const checks = [
+			[conversation, "conversation.session.header.utilities", "the header badge seat is gone — the T13 badge registration in lib/client.js must be revisited"],
+			[layout, "shell.overlay", "shell.overlay is gone — the T13 toast surface must move"],
+			[workspace, "openSession", "uiWorkspace.openSession is gone — the T13 badge click-through must be revisited"],
+			[primitives, "Toast", "the shared Toast primitive is gone — the T13 banner must be rebuilt"]
+		];
+		const gone = checks.filter(([found, needle]) => found === void 0 || !found.text.includes(needle));
+		record(gone.length === 0, "notice surface contracts (T13)", gone.length === 0 ? void 0 : `T13 contract drifted: ${gone.map(([found, needle, why]) => `${found === void 0 ? "package missing" : `no ${needle}`} — ${why}`).join("; ")}`);
+	}
+
 	for (const title of passes) console.log(`PASS  ${title}`);
 	for (const failure of failures) {
 		console.log(`FAIL  ${failure.title}`);
