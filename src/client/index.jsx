@@ -9,6 +9,8 @@ import { WorkspaceOnlyAskCard } from "./WorkspaceOnlyAskCard.jsx";
 import { WorkspaceOnlyPendingBadge, WorkspaceOnlyToast } from "./pending-notice.jsx";
 
 const inject = ["connection", "slots", "locale", "remote", "remote.settings", "uiSession", "sessions", "uiWorkspace"];
+/** Task T16: grace on top of the Host's dialog timeout for the card's self-destruct backstop. */
+const SELF_DESTRUCT_GRACE_MS = 15_000;
 function apply(ctx) {
 	installStyles(document);
 	const controller = new WorkspaceOnlySettingsController(ctx.remote, ctx.connection);
@@ -113,6 +115,7 @@ function apply(ctx) {
 		const completion = Promise.withResolvers();
 		let settled = false;
 		let remove = () => {};
+		let selfDestruct = 0;
 		// One idempotent unseat path. The click settle and the Host-side
 		// dismiss MUST clear the notice store synchronously — leaving
 		// the clear to `completion.promise.then` alone is what kept
@@ -121,6 +124,7 @@ function apply(ctx) {
 		// as belt-and-braces and withdraws the composer seat.
 		const cleanup = () => {
 			seats.delete(ask.requestId);
+			clearTimeout(selfDestruct);
 			pendingStore.update((state) => {
 				state.entries = state.entries.filter((entry) => entry.requestId !== ask.requestId);
 			});
@@ -185,6 +189,16 @@ function apply(ctx) {
 			}
 		});
 		seats.set(ask.requestId, dismiss);
+		// Task T16: belt-and-braces self-destruct. The Host's `askDone` can
+		// get lost (a dropped notification, a racing reconnect), and a stale
+		// card then lives in the composer forever. The Host settles the ask
+		// at its own dialog timeout and denies fail-closed regardless, so a
+		// late local dismiss never changes the verdict — it only removes the
+		// card. Reads the Host's deadline from the management snapshot.
+		const deadline = controller.store.getSnapshot().dialogTimeoutMs;
+		selfDestruct = setTimeout(() => {
+			seats.get(ask.requestId)?.();
+		}, (Number.isSafeInteger(deadline) && deadline >= 1 ? deadline : 120_000) + SELF_DESTRUCT_GRACE_MS);
 		// T13: mirror the seat for the header badge and queue one notice
 		// toast. The `seats` dedupe above makes both once per requestId.
 		const notice = {
@@ -204,8 +218,13 @@ function apply(ctx) {
 		// here. Announce now instead of waiting for React to mount the
 		// card, so the Host's presence window never loses a race with
 		// the render cycle; the card's own announce stays as an
-		// idempotent second chance.
-		controller.call("announce", { requestId: ask.requestId }).catch((error) => {
+		// idempotent second chance. Task T16: the Host answers
+		// `{ ok: false }` when it no longer knows this ask (it already
+		// settled) — a late card must go at once instead of waiting for
+		// an `askDone` that was broadcast before this seat existed.
+		controller.call("announce", { requestId: ask.requestId }).then((result) => {
+			if (result?.ok === false) dismiss();
+		}, (error) => {
 			console.warn("[workspace-only] announce RPC failed:", error);
 		});
 	};
@@ -226,8 +245,12 @@ function apply(ctx) {
 			// Presence handshake: the card announces itself once actually
 			// mounted, so the Host never waits out a panel that never
 			// rendered. Idempotent with the arrival announce in raisePanel.
+			// Task T16: `{ ok: false }` means the Host already settled this
+			// ask — drop the late card instead of seating it forever.
 			announce: (requestId) => {
-				controller.call("announce", { requestId }).catch((error) => {
+				controller.call("announce", { requestId }).then((result) => {
+					if (result?.ok === false) seats.get(requestId)?.();
+				}, (error) => {
 					console.warn("[workspace-only] announce RPC failed:", error);
 				});
 			}

@@ -24,7 +24,10 @@ var WorkspaceOnlySettingsController = class {
 		builtinAlways: [],
 		deny: [],
 		recent: [],
-		sessions: []
+		sessions: [],
+		// Task T16: the Host's ask deadline, for the card's self-destruct
+		// backstop (a lost `askDone` must not leave a stale card forever).
+		dialogTimeoutMs: 120_000
 	});
 	generation = 0;
 	view;
@@ -76,6 +79,7 @@ var WorkspaceOnlySettingsController = class {
 				state.deny = Array.isArray(snapshot.deny) ? snapshot.deny : [];
 				state.recent = Array.isArray(snapshot.recent) ? snapshot.recent : [];
 				state.sessions = Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
+				if (Number.isSafeInteger(snapshot.dialogTimeoutMs) && snapshot.dialogTimeoutMs >= 1) state.dialogTimeoutMs = snapshot.dialogTimeoutMs;
 			});
 		} catch {
 			// Older hosts without the management service keep the settings-only UI.

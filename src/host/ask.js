@@ -291,6 +291,13 @@ export function createAskFlow({ timeoutMs, allowAlways, allowPattern, isAlwaysAl
 				askQuestion(ctx, { agent, exec, reason, dir, sensitive, signal: anySignal([signal, aborter.signal]) }, fast > 0 ? Math.min(readTimeout(), fast) : readTimeout()),
 				late
 			]);
+			// Task T16: settle the generic question on EVERY exit path. Its
+			// card lives until the request settles — racing past a local
+			// timeout without aborting left the three-button question card
+			// in the composer forever ("the card never goes away"). The abort
+			// reaches the platform as ASK_ABORTED (a non-answer) wherever the
+			// answer did not already arrive; a settled request ignores it.
+			aborter.abort();
 			panel.cancel();
 			if (asked.kind === "answered") {
 				channel = asked.via === CHANNEL.alwaysBatch ? CHANNEL.alwaysBatch : CHANNEL.panel;
