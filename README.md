@@ -13,7 +13,7 @@ DeepSeek Harness (dsh) 插件：把**任何沙箱模式**（read-only / workspac
   - 无 Web 客户端（卡片未现身）→ 回退通用问题卡片（`ctx.userQuestions`，TUI 等）→ 再回退官方 `approval/request` 弹窗（与旧版行为一致，**依然绕过 `never` 策略**，Full access 会话也弹）；完全没有应答渠道时拒绝（fail closed）。
 - **会话档位选择框**（composer 权限选择器旁，与「仅可查看/工作区内修改/完全权限」同款下拉）：三档调节**本会话**的门禁强度——**仅工作区内**（越界读写都询问）/ **工作区外只读**（越界读放行、越界写询问）/ **完全放开**（越界读写都放行）。档位记在会话日志（ignorable `plugin:` 记录）+ 进程内权威，跨重启保留、会话间隔离；读写口径：`read`/`read_image`/`glob`/`grep` 算读，`write`/`edit` 与 shell（`bash`/`pwsh`，无法静态分辨读写）算写。**敏感文件弹窗与「永不放行」规则在任何档位都生效**。总开关关闭或未打开会话时选择框隐藏。
 - **白名单分两处管理**：
-  - **设置 → 通用设置 → Workspace Only → 总是允许的目录（全局）**：只放全局条目（处处生效），可手动添加/删除；
+  - **设置 → Workspace Only → 总是允许的目录（全局）**：只放全局条目（处处生效），可手动添加/删除；
   - **会话页 → 白名单目录**（与「对话 / 轨迹」并列的视图）：只放本工作区的**会话级**条目（询问卡片「总是允许该目录」写入的），可添加/删除；
   - 「最近询问的目录」一键加白写入**全局**（上限 20 条，仅展示用）。
 - **Windows 路径扫描**：shell 命令里的盘符（`C:\...`、`C:/...`）、UNC（`\\server\share`）、反斜杠逃逸（`..\`）与 POSIX 形态同等对待；路径包含判定对 Windows 形态使用 `path.win32` 语义（大小写不敏感）。
@@ -151,12 +151,12 @@ node scripts/verify-scanner.mjs   # 词法扫描用例（POSIX + Windows，含�
 node scripts/check-compat.mjs     # 对本机 dsh 安装做契约自检
 ```
 
-实现结构：`lib/scanner.js`（纯词法扫描 + 读写口径 `toolAccessKind`，可独立测试）、`lib/ask.js`（三键会合点与回退链）、`lib/approval-compat.js`（官方审批瀑布封装）、`lib/session-state.js`（会话档位三态与审计记录）、`lib/remote-service.js`（client→host 管理 RPC）、`lib/index.js`（门禁装配）、`lib/client.js`（设置行、composer 会话档位选择框与会话页「白名单目录」视图，UI 组件用 `@deepseek-ai/dsh-client-ui-primitives` 的 `Menu`/`Input`/`Button`，与官方权限选择器同款）。
+实现结构：`lib/scanner.js`（纯词法扫描 + 读写口径 `toolAccessKind`，可独立测试）、`lib/ask.js`（三键会合点与回退链）、`lib/approval-compat.js`（官方审批瀑布封装）、`lib/session-state.js`（会话档位三态与审计记录）、`lib/remote-service.js`（client→host 管理 RPC）、`lib/index.js`（门禁装配）、`lib/client.js`（设置页、composer 会话档位选择框与会话页「白名单目录」视图，UI 组件用 `@deepseek-ai/dsh-client-ui-primitives` 的 `Menu`/`Input`/`Button`，与官方权限选择器同款）。
 
 ## 升级说明（会话级放飞 → 会话档位）
 
 - 旧版的会话级「放飞」开关升级为三档档位：放飞中的旧会话读旧记录自动映射为**完全放开**，未放飞的映射为**仅工作区内**；
-- `alwaysScope` 配置项已移除：询问卡片「总是允许该目录」现在固定写**会话级**条目（在会话页「白名单目录」管理），要全局放行请在 设置 → 通用设置 → Workspace Only 手动添加；profile 的 `cordis.patch.yml` 若显式写过 `alwaysScope`，升级后删掉该行即可；
+- `alwaysScope` 配置项已移除：询问卡片「总是允许该目录」现在固定写**会话级**条目（在会话页「白名单目录」管理），要全局放行请在 设置 → Workspace Only 手动添加；profile 的 `cordis.patch.yml` 若显式写过 `alwaysScope`，升级后删掉该行即可；
 - 「总是允许该目录」新写的会话级条目只对同工作区根的会话生效；旧的全局字符串条目保持处处生效；
 - 管理 RPC 有变更（若你有脚本直调 `workspaceOnly/*`）：`setBypass(sessionId, enabled)` → `setScope(sessionId, scope)`（`scope` ∈ `workspace` / `outside-read` / `outside-write`），新增 `addGlobalAlways(dir)`，`snapshot` 的 `sessions[]` 由 `bypass: boolean` 改为 `scope: string`。
 
