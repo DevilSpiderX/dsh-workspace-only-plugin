@@ -137,6 +137,41 @@ export function shellTokens(input) {
 	return tokens;
 }
 
+/** `//server/share` UNC slash spelling (the share segment is mandatory). */
+const UNC_SLASH_RUN = /^\/\/[A-Za-z0-9.~_-]+[\\/]/;
+
+/**
+ * True when a leading `/` is really a regex or comment fragment, not a path
+ * (task T15). Shell command text is full of patterns like
+ * `-Pattern '^\s*(//|/\*|\*)'`, and lexing their slashes as absolute paths
+ * raised false approvals on every search/count command.
+ *
+ * - `/\*`, `/\d` — regex escapes after the slash: never a path.
+ * - `//` — a regex delimiter pair (`awk //`, `//x`) or comment start:
+ *   never a path, UNLESS the run is a UNC slash spelling — which always
+ *   carries its share segment (`//server/share`; a bare `//server` has no
+ *   share and stays pattern text).
+ * - `/*` — a comment start (`/* TODO */`) unless it reads as a glob: a bare
+ *   `/*` (end of token) stays gated (`echo /*` touches the root), and
+ *   `/*glob` continues as a path.
+ */
+export function isRegexOrCommentSlash(value) {
+	if (typeof value !== "string" || value[0] !== "/") return false;
+	const second = value[1];
+	if (second === "\\") return true;
+	if (second === "/") return !UNC_SLASH_RUN.test(value);
+	if (second === "*") {
+		// A bare `/*` keeps its root-glob meaning (`echo /*`); anything that
+		// stops the run right after (`/* comment */`, `/*|...`) is a comment
+		// or regex fragment.
+		const third = value[2];
+		if (third === void 0) return false;
+		return !/[A-Za-z0-9.~_]/.test(third);
+	}
+	return false;
+}
+
+
 /**
  * Match absolute-path substrings embedded inside a token (interpreter string
  * literals such as `node -e "...'/etc/passwd'..."`, `node -e "...'C:\tmp\file'..."`),
@@ -144,11 +179,15 @@ export function shellTokens(input) {
  * right after a quote, backtick, space, parenthesis, `=` (task T7: `FOO=/etc/x`,
  * `--out=C:\x` — the assignment/option-value form), or token start, so relative
  * segments like `src/x` inside a plain word are never misread as absolute.
- * Covers POSIX `/`, home `~/` / `~\`, drive letters, and UNC `\\`. Accepted
- * false-positive direction: `cmd -d a=/etc/x` (value behind a standalone
- * token's `=`) fires too — conservative, never a silent miss.
+ * Covers POSIX `/`, home `~/` / `~\`, drive letters, and UNC `\\`. The `/`
+ * form skips regex/comment fragments (task T15, see
+ * {@link isRegexOrCommentSlash}; the inline form treats any `/*`-style run as
+ * a fragment — an embedded root glob is rare enough to leave gated through
+ * its own token instead). Accepted false-positive direction: `cmd -d a=/etc/x`
+ * (value behind a standalone token's `=`) fires too — conservative, never a
+ * silent miss.
  */
-export const INTERIOR_PATH = /(?:^|['"`\s(=])((?:~[\\/]|[A-Za-z]:[\\/]|\\\\|\/)[^'"`;|&<>()]*)/g;
+export const INTERIOR_PATH = /(?:^|['"`\s(=])((?:~[\\/]|[A-Za-z]:[\\/]|\\\\|\/(?!(?:\\|\/(?![A-Za-z0-9.~_-]+[\\/])|[*](?![A-Za-z0-9.~_]))))[^'"`;|&<>()]*)/g;
 
 /** True when a shell token spells an absolute path in any supported syntax. */
 function isAbsoluteToken(token) {
@@ -233,6 +272,11 @@ export function shellEntries(command, root) {
 				found.push({ path: t, what: "command", outside: true, reason: `command references the user home: ${token}` });
 				return found;
 			}
+			// Task T15: a token that starts as a regex/comment slash fragment
+			// (`//`, `/* comment`, `/\*`) is pattern text, not a path carrier —
+			// skip it whole (its unescaped twin can otherwise resurrect the
+			// fragment as a UNC-looking run).
+			if (isRegexOrCommentSlash(t)) continue;
 			if (isAbsoluteToken(t)) {
 				const outside = !lexicallyWithin(t, root);
 				found.push({ path: t, what: "command", outside, ...outside ? { reason: `command references a path outside the workspace: ${token}` } : {} });
@@ -274,8 +318,9 @@ export function shellReason(command, root) {
 	return shellTargets(command, root)[0]?.reason;
 }
 
-/** True when a search pattern is absolute or escapes in any supported spelling. */
+/** True when a search pattern is absolute or escapes in any supported spelling. Regex/comment slash fragments (task T15) are pattern text, not paths. */
 export function isAbsoluteOrEscapingPattern(pattern) {
+	if (isRegexOrCommentSlash(pattern)) return false;
 	return pattern.startsWith("/") || HOME_PREFIX.test(pattern) || isAbsoluteToken(pattern) || isEscapeToken(pattern) || DOTDOT_SEGMENT.test(pattern);
 }
 
@@ -325,7 +370,8 @@ export function isPreciselyScanned(name) {
 /** Task T8: one argument leaf with a path shape judged generically. */
 function genericEntry(value, root, what) {
 	const expanded = expandHomeSpelling(value);
-	const shaped = expanded !== void 0 || isAbsoluteToken(value) || isEscapeToken(value) || HOME_PREFIX.test(value);
+	// Task T15: a regex/comment slash fragment is pattern text, not a path.
+	const shaped = !isRegexOrCommentSlash(value) && (expanded !== void 0 || isAbsoluteToken(value) || isEscapeToken(value) || HOME_PREFIX.test(value));
 	// Only path-shaped values are judged; ordinary text is never a target.
 	if (!shaped) return void 0;
 	if (expanded !== void 0) {

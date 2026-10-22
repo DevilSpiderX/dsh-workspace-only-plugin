@@ -7,7 +7,7 @@
  */
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { builtinAlwaysDirs, denyMatch, expandHomeSpelling, genericTargets, isPlatformTempTarget, lexicallyWithin, pathReason, sameLocation, sensitiveMatch, shellReason, toolAccessKind } from "../src/host/scanner.js";
+import { builtinAlwaysDirs, denyMatch, expandHomeSpelling, genericTargets, isPlatformTempTarget, isRegexOrCommentSlash, lexicallyWithin, pathReason, sameLocation, sensitiveMatch, shellReason, toolAccessKind } from "../src/host/scanner.js";
 
 const posixRoot = "/Volumes/CBR DATA/项目/dsh-workspace-only-plugin";
 const winRoot = "C:\\work\\project";
@@ -76,7 +76,21 @@ const cases = [
 	["type %USERPROFILE%\\x", "FLAG", winRoot],
 	["type ~\\x", "FLAG", winRoot],
 	["type ~", "FLAG", winRoot],
-	["echo $HOME", "FLAG", winRoot]
+	["echo $HOME", "FLAG", winRoot],
+	// --- T15: regex/comment slash runs are pattern text, not paths ---
+	["Write-Output \"--- src/host/scanner.js head 45 ---\"; (Get-Content src/host/scanner.js -TotalCount 45) -join \"`n\"; Write-Output \"\"; Write-Output \"--- comment counts ---\"; Write-Output \"src comment lines: $((Select-String -Path src/host/scanner.js -Pattern '^\\s*(//|/\\*|\\*)').Count)\"; Write-Output \"lib comment lines: $((Select-String -Path lib/scanner.js -Pattern '^\\s*(//|/\\*|\\*)').Count)\"; Write-Output \"--- lib/index.js comment lines: $((Select-String -Path lib/index.js -Pattern '^\\s*(//|/\\*|\\*)').Count) vs src: $((Select-String -Path src/host/index.js -Pattern '^\\s*(//|/\\*|\\*)').Count)\"", "OK", winRoot],
+	["Write-Output \"src comment lines: $((Select-String -Path src/host/scanner.js -Pattern '^\\s*(//|/\\*|\\*)').Count)\"", "OK", winRoot],
+	["awk '// {print $1}'", "OK", winRoot],
+	["grep // src", "OK", winRoot],
+	["echo '/* comment */'", "OK", winRoot],
+	["node -e \"console.log('//x')\"", "OK", winRoot],
+	["findstr \"^//\" src\\index.js", "OK", winRoot],
+	["sed 's|//|/|g' x.txt", "OK", winRoot],
+	// T15 false-negative controls: UNC slash spellings and root globs still fire.
+	["cat //server/share/x", "FLAG", winRoot],
+	["tool --out=//server/share/x", "FLAG", winRoot],
+	["echo /*", "FLAG", winRoot],
+	["grep // /etc/x", "FLAG", winRoot]
 ];
 
 /**
@@ -211,6 +225,7 @@ const genericCases = [
 	[{ big: "C:\\outside\\z" + "x".repeat(5000) }, []],
 	[{ rel: "src/x" }, []],
 	[{ note: "echo a=b and 42" }, []],
+	[{ pattern: "//" }, []],
 	[{ a: "C:\\outside\\p", b: "C:\\outside\\p" }, ["C:\\outside\\p"]]
 ];
 /**
@@ -222,6 +237,29 @@ const sameCases = [
 	["/home/me/project", "/home/me/project", true],
 	["C:\\work\\projectA", "C:\\work\\projectB", false],
 	["", "C:\\work", false]
+];
+/**
+ * Regex/comment slash fragments (task T15) — [value, expectedRegexShaped].
+ * Pattern text must never gate; UNC slash spellings and root globs must.
+ */
+const slashShapes = [
+	["//", true],
+	["//|x", true],
+	["//)", true],
+	["/* comment */", true],
+	["/*|*", true],
+	["/**", true],
+	["/\\*", true],
+	["/\\d+", true],
+	["//server/share/x", false],
+	// A bare `//server` has no share segment: pattern text, not a path.
+	["//server", true],
+	["//x", true],
+	["/*", false],
+	["/*glob", false],
+	["/etc/passwd", false],
+	["/foo/bar", false],
+	["src/x", false]
 ];
 let pass = 0;
 let total = 0;
@@ -245,6 +283,13 @@ for (const [a, b, expected] of sameCases) {
 	const ok = got === expected;
 	if (ok) pass += 1;
 	console.log(`${ok ? "PASS" : "FAIL"}  same-location ${JSON.stringify(a)} ~ ${JSON.stringify(b)} => ${got}`);
+}
+for (const [value, expected] of slashShapes) {
+	total += 1;
+	const got = isRegexOrCommentSlash(value);
+	const ok = got === expected;
+	if (ok) pass += 1;
+	console.log(`${ok ? "PASS" : "FAIL"}  slash-shape ${JSON.stringify(value)} => ${got}`);
 }
 for (const [args, expectedPaths] of genericCases) {
 	total += 1;
