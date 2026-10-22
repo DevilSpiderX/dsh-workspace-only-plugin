@@ -27,13 +27,13 @@ DSH 0.2 自带完整插件安装器（依赖安装、`dsh.bundle` 校验、版�
 **方式一：web GUI 安装**
 
 1. 打开 dsh web 的「插件」页；
-2. 「包名或地址」填 `github:CsBpRd/dsh-workspace-only-plugin#main`，点「安装」；
+2. 「包名或地址」填 `github:devilspiderx/dsh-workspace-only-plugin#main`，点「安装」；
 3. 完成后重启 dsh web（提示「已安装，下次启动后加载」），再打开 Workspace Only 开关。
 
 **方式二：一行 CLI**
 
 ```sh
-dsh plugin --profile web add "github:CsBpRd/dsh-workspace-only-plugin#main"
+dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main"
 ```
 
 然后重启 dsh web（`--profile` 换成你的 profile 名）。
