@@ -5,15 +5,16 @@ DeepSeek Harness (dsh) 插件：把**任何沙箱模式**（read-only / workspac
 ## 功能
 
 - **全局开关**（`Config.enabled`）：开启后，越出工作区的 `read`/`write`/`edit`/`read_image`/`glob`/`grep`/`bash`/`pwsh` 调用都会停下来问用户；关闭则完全不干预。
-- **三键裁决**（`仅此一次 / 总是允许本目录 / 拒绝`）：
+- **三键裁决**（`仅此一次 / 总是允许该目录 / 拒绝`）：
   - 越界调用触发时，输入栏被一张**三键卡片接管**——与 dsh 权限提升面板同款形态（警示条 + 工具/目标路径/原因 + 按钮行），`Enter`=仅此一次、`Esc`=拒绝；
-  - **总是允许本目录** → 目录写入**会话级**白名单条目 `{root, dir}`（root=授权会话的工作区根，仅同根会话生效；持久化到 profile 的 `cordis.patch.yml`），同目录后续直接放行；
+  - **总是允许该目录** → 目录写入**会话级**白名单条目 `{root, dir}`（root=授权会话的工作区根，仅同根会话生效；持久化到 profile 的 `cordis.patch.yml`），同目录后续直接放行；
   - **拒绝 / 超时**（`Config.dialogTimeoutMs`，默认 120s）→ 拒绝该次调用；
+  - **同一会话的并发询问逐张排队**（子代理并行工具调用就是同会话并发）：一次只出现一张卡片，答完这张才轮到下一张，不会出现「点了不关」（多张卡片挤占同一渲染席位）；排队中的调用若已被新写入的白名单条目覆盖，出队时直接放行（等效批量放行），不再弹卡；
   - 无 Web 客户端（卡片未现身）→ 回退通用问题卡片（`ctx.userQuestions`，TUI 等）→ 再回退官方 `approval/request` 弹窗（与旧版行为一致，**依然绕过 `never` 策略**，Full access 会话也弹）；完全没有应答渠道时拒绝（fail closed）。
 - **会话档位选择框**（composer 权限选择器旁，与「仅可查看/工作区内修改/完全权限」同款下拉）：三档调节**本会话**的门禁强度——**仅工作区内**（越界读写都询问）/ **工作区外只读**（越界读放行、越界写询问）/ **完全放开**（越界读写都放行）。档位记在会话日志（ignorable `plugin:` 记录）+ 进程内权威，跨重启保留、会话间隔离；读写口径：`read`/`read_image`/`glob`/`grep` 算读，`write`/`edit` 与 shell（`bash`/`pwsh`，无法静态分辨读写）算写。**敏感文件弹窗与「永不放行」规则在任何档位都生效**。总开关关闭或未打开会话时选择框隐藏。
 - **白名单分两处管理**：
   - **设置 → 通用设置 → Workspace Only → 总是允许的目录（全局）**：只放全局条目（处处生效），可手动添加/删除；
-  - **会话页 → 白名单目录**（与「对话 / 轨迹」并列的视图）：只放本工作区的**会话级**条目（询问卡片「总是允许本目录」写入的），可添加/删除；
+  - **会话页 → 白名单目录**（与「对话 / 轨迹」并列的视图）：只放本工作区的**会话级**条目（询问卡片「总是允许该目录」写入的），可添加/删除；
   - 「最近询问的目录」一键加白写入**全局**（上限 20 条，仅展示用）。
 - **Windows 路径扫描**：shell 命令里的盘符（`C:\...`、`C:/...`）、UNC（`\\server\share`）、反斜杠逃逸（`..\`）与 POSIX 形态同等对待；路径包含判定对 Windows 形态使用 `path.win32` 语义（大小写不敏感）。
 - 零 node_modules 补丁：开关/白名单走插件 Config（DSH 0.2 配置通道），不再需要 0.1 时代 apiproxy 白名单补丁；`workspace-write` 预设改名 "Write Only" 改为可选项（默认关闭，与 auto 插件零冲突）。
@@ -52,13 +53,14 @@ dsh plugin --profile web add "github:CsBpRd/dsh-workspace-only-plugin#main"
 | `always` | `[]` | 总是允许的目录白名单（运行时可写，`.volatile()`）：字符串条目=**全局**（设置页管理，处处生效）；`{root, dir}` 条目=**会话级**（会话页「白名单目录」管理，仅同 root 会话生效） |
 | `sensitivePatterns` | `["*.env","*.env.*","*.pem","*.key","*.p12","*.pfx","id_rsa*","id_ed25519*"]` | 敏感文件 basename glob：**工作区内也弹三键** |
 | `sensitiveAllowPatterns` | `["*.env.example","*.env.sample","*.env.template","*.env.defaults"]` | 敏感豁免（优先于 `sensitivePatterns`，如 `.env.example` 不弹） |
-| `sensitiveAlways` | `[]` | "总是允许此类文件"持久化的 pattern（运行时可写，`.volatile()`；与目录白名单**正交**，"总是允许本目录"不会放行敏感文件） |
+| `sensitiveAlways` | `[]` | "总是允许此类文件"持久化的 pattern（运行时可写，`.volatile()`；与目录白名单**正交**，"总是允许该目录"不会放行敏感文件） |
 | `deny` | `[]` | **永不放行**规则：以 `/` 或 `\` 结尾按目录前缀、否则按 glob 全路径匹配（运行时可写，`.volatile()`）；命中直接拒绝、不弹窗、**优先级最高** |
 | `renamePresetLabel` | `false` | 把 `workspace-write` 预设显示名改为 "Write Only"；开启后与 `@nanmicoder/dsh-auto-mode` 的标签匹配可能冲突 |
 | `dialogTimeoutMs` | `120000` | 三键问题的等待上限，超时按拒绝处理 |
 | `fastDenyMs` | `0` | 非交互快速 fail-closed 预算（毫秒）：`>0` 时无应答渠道（无 UI）的调用在该预算内直接拒绝、不走系统弹窗兜底；`0` 保持完整回退链 |
 | `scanAllTools` | `false` | 全量保守扫描（opt-in）：白名单 8 工具之外的工具也按参数里的路径形状判定（可能对含路径样文本的参数误报） |
 | `scanIgnoreTools` | `[]` | 保守扫描的工具豁免名单（误报逃生舱） |
+| `realpathCheck` | `false` | realpath 复核（opt-in，T11）：对词法判「工作区内」的路径做一次 `fs.realpath` 复核，工作区内符号链接指向区外时改判越界、照走三键；每条目一次同步 fs 调用（性能代价），解析失败按越界询问（fail-closed） |
 
 手动编辑示例（profile 的 `cordis.patch.yml` 追加）：
 
@@ -115,7 +117,7 @@ dsh plugin --profile web add "github:CsBpRd/dsh-workspace-only-plugin#main"
 - **deny 规则**优先级最高：命中直接拒绝、不弹窗，压过白名单、会话档位、总开关与平台临时区豁免（设置页可管理）；
 - **会话档位**（composer 旁选择框）决定越界读写要不要问：**仅工作区内**=越界读写都问；**工作区外只读**=越界读放行、越界写问（shell 保守按写）；**完全放开**=越界读写都放行。档位与白名单是**叠加放行**（任一放行即免弹），但压不过 deny 规则，且只影响越界维度；
 - **白名单目录**内免弹，等效工作区内：全局条目（设置页）处处生效；会话级条目（`{root, dir}`，会话页「白名单目录」）仅同工作区根的会话生效；询问卡片「总是允许本目录」写入**会话级**条目；另有**内置默认条目** `<DSH_HOME>/dsh-runtimes/dsh-primary-runtime`（每次判定实时解析，处处生效、不可删除，见「内置默认白名单」）；
-- **敏感文件**（`sensitivePatterns` 命中的 basename）**工作区内也弹三键，且不受会话档位影响**（「完全放开」档也弹）：一次调用既越界又敏感只弹一次（原因合并）；"总是允许此类文件"按 **pattern** 持久化（`sensitiveAlways`），与目录白名单正交——"总是允许本目录"不会放行敏感文件；
+- **敏感文件**（`sensitivePatterns` 命中的 basename）**工作区内也弹三键，且不受会话档位影响**（「完全放开」档也弹）：一次调用既越界又敏感只弹一次（原因合并）；"总是允许此类文件"按 **pattern** 持久化（`sensitiveAlways`），与目录白名单正交——"总是允许该目录"不会放行敏感文件；
 - **平台临时区**默认免弹：`%TEMP%`/`os.tmpdir()` 下 `dsh-*` 或 `.dsh-*` 一级子目录（含子树）是 DSH 自己生成的落盘目录——`dsh-subprocess-*`（子进程大输出 spill）、`dsh-spill-*`（工具结果溢出）、`dsh-*`（沙箱受限进程的私有 TEMP）等，工具跟随 `spillPath` 或展开 `%TEMP%` 时不再询问；临时根本身、其下普通文件、其他位置的同名前缀目录照旧弹；
 - 带 `sandbox_permissions` 的升权调用**仅当目标模式严格宽于会话当前模式**（官方升权弹窗必现）时才跳过门禁（避免双弹窗）；重复（等于当前模式）或畸形的升权请求在官方侧**零弹窗**直接放行/报错，一律照走三键门禁，堵死"重复升权绕过"；
 - 审批策略（`ask`/`never`）不影响门禁：弹窗不走 `ApprovalService`，`never` 会话也照弹。
@@ -133,9 +135,10 @@ dsh plugin --profile web add "github:CsBpRd/dsh-workspace-only-plugin#main"
 ## 边界与残余面
 
 - 收编是**工具层词法门禁**，非内核隔离。home 形态（`~`/`$HOME`/`${HOME}`/`%USERPROFILE%`/`%HOMEPATH%`/`$env:USERPROFILE`/`$env:HOMEPATH`）已统一展开为真实路径判定（单引号内的字面量除外）；扫描器看不到的路径（完全动态计算、其他环境变量拼接）是文档化的残余面，与 auto-mode 插件同级哲学。
+- 词法围栏**默认不解析符号链接**（残余面，T11）：工作区内符号链接指向区外时，路径仍是「工作区内」词法字符串 → 不拦截，底层 fs 操作会跟随链接越界——与 MiMo `AppFileSystem.contains` 同哲学（两边一致）。开启 `realpathCheck` 后，命中「工作区内」的路径经 `fs.realpath` 复核（对尚不存在的目标取最深存在祖先 canonicalize 后重拼余段，覆盖「写新文件、父目录是链接」场景；root 与目标双方都解析，macOS `/tmp`→`/private/tmp` 不误拒）：解析到区外改判越界照走三键，解析失败 fail-closed 按越界询问。残余面收窄但仍存：**白名单 / deny 规则仍按词法路径匹配**（链接路径与其真身不互通）。
 - 默认只精确扫描 8 个工具（`read`/`write`/`edit`/`read_image`/`glob`/`grep`/`bash`/`pwsh`，误报低）；MCP/插件注册的其他工具默认不设防。开启 `scanAllTools` 进入全量保守模式：任何工具的参数里出现路径形状值都会判定，配合 `scanIgnoreTools` 豁免误报工具；shell 命令内的**相对**敏感路径（如 `cat .env`）不在词法扫描范围内。
 - 在 workspace-write 会话，批准后的越界**写**仍受进程内写围栏拦截（`FS_SANDBOX_DENIED`），随后走 dsh 既有 `sandbox_permissions` 升权再确认一次——写操作始终需要明确同意；携带 `sandbox_permissions` 的调用仅在官方升权弹窗必现（目标模式严格宽于会话当前模式）时跳过本插件门禁（避免双弹窗），重复/畸形升权照走三键。
-- 三键卡片渲染依赖 Web 端（`conversation.composer` 槽位接管）；无 Web 客户端时回退通用问题卡片（TUI 等）→ 官方审批弹窗。卡片超时视为拒绝。设置 `fastDenyMs > 0` 可让无应答渠道的调用（后台/无 UI）秒级拒绝而不挂满超时（`fast-deny` 审计通道）。
+- 三键卡片渲染依赖 Web 端（`conversation.composer` 槽位接管）；无 Web 客户端时回退通用问题卡片（TUI 等）→ 官方审批弹窗。卡片超时视为拒绝。设置 `fastDenyMs > 0` 可让无应答渠道的调用（后台/无 UI）秒级拒绝而不挂满超时（`fast-deny` 审计通道）。卡片席位按 `requestId` 去重；询问在 Host 侧结算（超时、批量放行、其他客户端作答）后广播 `askDone`，各端残留卡片自动撤下。
 - composer 档位选择框与会话页「白名单目录」视图依赖 Web 端槽位（`conversation.input.left` / `conversation.view`，用 `@deepseek-ai/dsh-client-ui-primitives` 渲染）；TUI 等无此界面时档位保持「仅工作区内」，白名单只能从设置页或询问卡片维护。
 - 档位的读写口径是**工具级**的：shell（`bash`/`pwsh`）命令内无法静态分辨读写，一律按写处理（「工作区外只读」下 shell 越界照弹）；`scanAllTools` 覆盖的未知工具同样保守按写。
 - 沙箱执行约束全部沿用官方（含 win32 的 ACL 受限令牌 runner 与 `dsh-fs-sandbox` 写围栏）：本插件只在工具层加门禁，不改动任何沙箱后端。
@@ -153,8 +156,8 @@ node scripts/check-compat.mjs     # 对本机 dsh 安装做契约自检
 ## 升级说明（会话级放飞 → 会话档位）
 
 - 旧版的会话级「放飞」开关升级为三档档位：放飞中的旧会话读旧记录自动映射为**完全放开**，未放飞的映射为**仅工作区内**；
-- `alwaysScope` 配置项已移除：询问卡片「总是允许本目录」现在固定写**会话级**条目（在会话页「白名单目录」管理），要全局放行请在 设置 → 通用设置 → Workspace Only 手动添加；profile 的 `cordis.patch.yml` 若显式写过 `alwaysScope`，升级后删掉该行即可；
-- 「总是允许本目录」新写的会话级条目只对同工作区根的会话生效；旧的全局字符串条目保持处处生效；
+- `alwaysScope` 配置项已移除：询问卡片「总是允许该目录」现在固定写**会话级**条目（在会话页「白名单目录」管理），要全局放行请在 设置 → 通用设置 → Workspace Only 手动添加；profile 的 `cordis.patch.yml` 若显式写过 `alwaysScope`，升级后删掉该行即可；
+- 「总是允许该目录」新写的会话级条目只对同工作区根的会话生效；旧的全局字符串条目保持处处生效；
 - 管理 RPC 有变更（若你有脚本直调 `workspaceOnly/*`）：`setBypass(sessionId, enabled)` → `setScope(sessionId, scope)`（`scope` ∈ `workspace` / `outside-read` / `outside-write`），新增 `addGlobalAlways(dir)`，`snapshot` 的 `sessions[]` 由 `bypass: boolean` 改为 `scope: string`。
 
 设计与 DSH 运行时契约详见 [`docs/increment-plan.md`](docs/increment-plan.md)（含实现中发现的契约出入记录）。
