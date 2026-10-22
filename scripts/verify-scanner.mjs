@@ -1,5 +1,5 @@
 /**
- * Scanner verification (task A). Runs the pure lexical gate in `lib/scanner.js`
+ * Scanner verification (task A). Runs the pure lexical gate in `src/host/scanner.js`
  * against synthetic paths — POSIX and Windows spellings alike — including
  * false-positive controls. No deployment or DSH runtime required:
  *
@@ -7,7 +7,7 @@
  */
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { builtinAlwaysDirs, denyMatch, expandHomeSpelling, genericTargets, isPlatformTempTarget, lexicallyWithin, pathReason, sameLocation, sensitiveMatch, shellReason, toolAccessKind } from "../lib/scanner.js";
+import { builtinAlwaysDirs, denyMatch, expandHomeSpelling, genericTargets, isPlatformTempTarget, lexicallyWithin, pathReason, sameLocation, sensitiveMatch, shellReason, toolAccessKind } from "../src/host/scanner.js";
 
 const posixRoot = "/Volumes/CBR DATA/项目/dsh-workspace-only-plugin";
 const winRoot = "C:\\work\\project";

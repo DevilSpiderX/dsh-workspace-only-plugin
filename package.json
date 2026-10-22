@@ -40,6 +40,13 @@
   "license": "MIT",
   "scripts": {
     "verify-scanner": "node scripts/verify-scanner.mjs",
-    "check-compat": "node scripts/check-compat.mjs"
+    "check-compat": "node scripts/check-compat.mjs",
+    "build": "vite build -c vite.host.config.mjs && vite build -c vite.client.config.mjs",
+    "prepack": "pnpm build"
+  },
+  "packageManager": "pnpm@12.3.4",
+  "devDependencies": {
+    "react": "^19",
+    "vite": "^7"
   }
 }

@@ -148,11 +148,12 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
 ## 开发自检
 
 ```sh
+pnpm install && pnpm build        # 构建 src/ → lib/（产物入库；改源码后必须重建并随源码同 commit）
 node scripts/verify-scanner.mjs   # 词法扫描用例（POSIX + Windows，含误报对照）
 node scripts/check-compat.mjs     # 对本机 dsh 安装做契约自检
 ```
 
-实现结构：`lib/scanner.js`（纯词法扫描 + 读写口径 `toolAccessKind`，可独立测试）、`lib/ask.js`（三键会合点与回退链）、`lib/approval-compat.js`（官方审批瀑布封装）、`lib/session-state.js`（会话档位三态与审计记录）、`lib/remote-service.js`（client→host 管理 RPC）、`lib/index.js`（门禁装配）、`lib/client.js`（设置页、composer 会话档位选择框、会话页「白名单目录」视图、会话标题栏待审批徽章与 toast 提示，UI 组件用 `@deepseek-ai/dsh-client-ui-primitives` 的 `Menu`/`Input`/`Button`/`Toast`，与官方权限选择器同款）。
+实现结构：源码在 `src/`、构建产物在 `lib/`（`pnpm build` 生成，随 git 分发）。`src/host/scanner.js`（纯词法扫描 + 读写口径 `toolAccessKind`，可独立测试）、`src/host/ask.js`（三键会合点与回退链）、`src/host/approval-compat.js`（官方审批瀑布封装）、`src/host/session-state.js`（会话档位三态与审计记录）、`src/host/remote-service.js`（client→host 管理 RPC）、`src/host/index.js`（门禁装配）、`src/client/**`（React JSX 源码：设置页、composer 会话档位选择框、会话页「白名单目录」视图、会话标题栏待审批徽章与 toast 提示，UI 组件用 `@deepseek-ai/dsh-client-ui-primitives` 的 `Menu`/`Input`/`Button`/`Toast`，与官方权限选择器同款）→ 构建为单文件 `lib/client.js`。
 
 ## 升级说明（会话级放飞 → 会话档位）
 
