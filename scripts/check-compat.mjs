@@ -247,22 +247,40 @@ function main() {
 
 	// 13. T13 notice-surface contracts: the session-header actions slot the
 	//     badge rides (right behind the subagent catalog dropdown), the
-	//     shell.overlay float surface the toast rides, the uiWorkspace.openSession
-	//     navigation the badge click-through uses (a subagent target must be its
-	//     SubagentAddress — see AGENTS.md), and the shared Toast primitive.
+	//     shell.overlay float surface the toast rides, and the
+	//     uiWorkspace.openSession navigation the badge click-through uses
+	//     (a subagent target must be its SubagentAddress — see AGENTS.md).
 	{
 		const conversation = locate("dsh-client-ui-conversation", "lib/client.js", roots);
 		const layout = locate("dsh-client-ui-layout", "lib/client.js", roots);
 		const workspace = locate("dsh-client-ui-workspace", "lib/client.js", roots);
-		const primitives = locate("dsh-client-ui-primitives", "lib/client.js", roots);
 		const checks = [
 			[conversation, "conversation.session.header.actions", "the header badge seat is gone — the T13 badge registration in lib/client.js must be revisited"],
 			[layout, "shell.overlay", "shell.overlay is gone — the T13 toast surface must move"],
-			[workspace, "openSession", "uiWorkspace.openSession is gone — the T13 badge click-through must be revisited"],
-			[primitives, "Toast", "the shared Toast primitive is gone — the T13 banner must be rebuilt"]
+			[workspace, "openSession", "uiWorkspace.openSession is gone — the T13 badge click-through must be revisited"]
 		];
 		const gone = checks.filter(([found, needle]) => found === void 0 || !found.text.includes(needle));
 		record(gone.length === 0, "notice surface contracts (T13)", gone.length === 0 ? void 0 : `T13 contract drifted: ${gone.map(([found, needle, why]) => `${found === void 0 ? "package missing" : `no ${needle}`} — ${why}`).join("; ")}`);
+	}
+	// 14. the Toast primitive lives in the FROZEN MODULE TABLE as a shell seed
+	//     (`PLATFORM_MODULES` + `seed.ts` inline `dsh-client-ui-primitives`;
+	//     it ships no standalone package inside app.asar's node_modules, so a
+	//     package-path probe reports a live module as "gone"). The module
+	//     table is verified the way probe 8 verifies it: shipped client
+	//     bundles must request the id — a request no shipped bundle makes is
+	//     absent from the table and plugin bundles cannot resolve it.
+	{
+		const owners = ["dsh-client-ui-layout", "dsh-client-ui-chat", "dsh-client-locale", "dsh-client-ui-conversation", "dsh-client-ui-workspace"];
+		let seeded = false;
+		for (const pkg of owners) {
+			const found = locate(pkg, "lib/client.js", roots);
+			if (found === void 0) continue;
+			if ([...found.text.matchAll(/require\("([^"]+)"\)/g)].some((match) => match[1] === "@deepseek-ai/dsh-client-ui-primitives")) {
+				seeded = true;
+				break;
+			}
+		}
+		record(seeded, "toast primitive seed (T13)", seeded ? void 0 : "no shipped client bundle requests @deepseek-ai/dsh-client-ui-primitives — the shared Toast primitive is missing from the frozen module table and the T13 banner must be rebuilt");
 	}
 
 	for (const title of passes) console.log(`PASS  ${title}`);

@@ -259,7 +259,11 @@ function apply(ctx) {
 					return;
 				}
 				if (target === null || target === void 0 || typeof target.childSessionId !== "string") return;
-				ctx.uiWorkspace.openSession(target);
+				// The badge builds the address from the list row's `parentId`
+				// (mode unknown); prefer the platform's exact SubagentAddress
+				// when it knows one, so the mode is not guessed.
+				const exact = ctx.sessions?.subagentAddress?.(target.childSessionId);
+				ctx.uiWorkspace.openSession(exact ?? target);
 			}
 		})
 	}, WorkspaceOnlyPendingBadge));

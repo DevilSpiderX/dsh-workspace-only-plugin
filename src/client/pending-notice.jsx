@@ -16,7 +16,11 @@ export function WorkspaceOnlyPendingBadge({ sessionId, useSessions, usePending, 
 	// lives in that subagent's own composer and the parent view cannot
 	// see it. Unrelated sessions must stay clean — this is a navigation
 	// hint for THIS conversation's children, not a global alarm.
-	const visible = entries.filter((entry) => byId[entry.sessionId]?.subagent?.address?.parentSessionId === sessionId);
+	// The list row's subagent link is `SessionSummary.parentId` (paired
+	// with `origin: 'subagent'`); `byId` rows carry NO `subagent.address`
+	// — that shape lives on the per-Session `useSession` snapshot. Read
+	// the wrong field and the filter never matches: cards show, no badge.
+	const visible = entries.filter((entry) => byId[entry.sessionId]?.parentId === sessionId);
 	if (visible.length === 0) return null;
 	const tip = [t("pending.tip", { n: visible.length }), ...visible.map((entry) => {
 		const label = byId[entry.sessionId]?.title ?? entry.toolName;
@@ -32,9 +36,15 @@ export function WorkspaceOnlyPendingBadge({ sessionId, useSessions, usePending, 
 				if (entry === null || entry === void 0 || typeof entry.sessionId !== "string") return;
 				// Navigate by the SubagentAddress when the target session is
 				// a subagent: a bare SessionId opens it as a plain session
-				// and history loading dies with `subagent/not-found`.
-				const address = byId[entry.sessionId]?.subagent?.address;
-				openPending(address ?? entry.sessionId);
+				// and history loading dies with `subagent/not-found`. The
+				// list row only carries the parent link, so build the
+				// address from `parentId` with an unknown mode; `openPending`
+				// refines the mode through `sessions.subagentAddress`.
+				const summary = byId[entry.sessionId];
+				const target = summary?.parentId == null
+					? entry.sessionId
+					: { parentSessionId: summary.parentId, childSessionId: entry.sessionId, mode: "unknown" };
+				openPending(target);
 			}}
 		>
 			<span data-workspace-only-pendingDot />
