@@ -6,7 +6,7 @@ DeepSeek Harness (dsh) 0.2.x 插件：在工具层把任意沙箱模式下的文
 
 ```sh
 pnpm install                      # 装 vite/react 开发依赖（pnpm-lock.yaml 入库）
-pnpm build                        # src/host + src/client → lib/（产物入库，与 src/ 同 commit）
+pnpm build                        # src/host + src/client → lib/（产物入库，与 src/ 同 commit）；产物剥注释+压空白（strip-comments）
 node scripts/verify-scanner.mjs   # 词法扫描用例（POSIX+Windows），直测 src/host/scanner.js，不依赖构建与本机 dsh
 node scripts/check-compat.mjs     # 对本机 dsh 安装做契约自检（看守发布产物 lib/client.js）；--asar <app.asar> 或 DSH_HOME/DSH_ASAR 指定来源
 node tmp/smoke/run.mjs            # 端到端 smoke（stub dsh 包 + 真 schemastery 校验写回）；tmp/ 不入库，缺失则跳过
@@ -14,15 +14,17 @@ node tmp/smoke/run.mjs            # 端到端 smoke（stub dsh 包 + 真 schemas
 
 - 改 `src/host/scanner.js` 或 shell 扫描行为 → 必跑 `verify-scanner.mjs`，新用例加进它的 `cases` 数组。
 - 改任何 DSH 契约耦合面（审批词汇、pre-execute、插件记录、问答通道、client `require()`）→ 必跑 `check-compat.mjs`；它无 dsh 安装时 exit 1，属环境问题不是代码问题。
-- smoke 的 settings stub 对每次写回跑真 `Config(patch)` 校验（schemastery 转发自 `tmp/asar` 提取物，缺了要先提取 asar）——配置形状失配在 smoke 就报红。改会话状态 API、UI 文案或 Config 形状时同步 smoke 的断言与硬编码值：断言落后 API 曾让 smoke 整段烂掉（`setBypass`→档位三态），T9 批次的回归因此漏网。smoke 直测 `src/host/**`，但对 `lib/client.js`（构建产物）做 bundle 断言，跑它前先 `pnpm build`。
+- smoke 的 settings stub 对每次写回跑真 `Config(patch)` 校验（schemastery 转发自 `tmp/asar` 提取物，缺了要先提取 asar）——配置形状失配在 smoke 就报红。改会话状态 API、UI 文案或 Config 形状时同步 smoke 的断言与硬编码值：断言落后 API 曾让 smoke 整段烂掉（`setBypass`→档位三态），T9 批次的回归因此漏网。smoke 直测 `src/host/**`，但对 `lib/client.js`（构建产物）做 bundle 断言，跑它前先 `pnpm build`。bundle 断言必须**空白容错**（`\s*` 量词）——产物剥注释后连单参箭头括号都会被去掉（`(scope) =>` → `scope=>`），写死源码空格形态的正则会整段假红。
 - **`lib/` 下的文件是编译产物，不要主动去修改**——所有改动写进 `src/`，再 `pnpm build` 重新生成。
 - 构建产物 `lib/` 必须随 `src/` 一起提交：安装走 git 源（`github:...`）取仓库内容、不跑构建，`prepare` 之类安装期脚本禁止出现（只允许 `prepack: "pnpm build"`）。
+- **任务完成后不要主动安装到本机 dsh**（`dsh plugin add`、往 profile 写 `cordis.patch.yml`、拷贝 `lib/` 进安装目录等都算）——构建与自检通过即止，安装/升级留给用户自己做。
 
 ## 提交约定
 
 - 提交信息写入 `tmp/commit-msg.txt` 再 `git commit -F tmp/commit-msg.txt`——PowerShell 下 `-m` 会毁掉引号。
-- 提交信息类型前缀用英文（`feat:`/`fix:`/`docs:`/`build:` 等），正文中英文均可，可带任务编号（T1–T13）；一个任务一个 commit。
-- README/docs 写中文，代码注释写英文。
+- 提交信息类型前缀用英文（`feat:`/`fix:`/`docs:`/`build:` 等），正文中英文均可，可带任务编号（T1 起连续编号，现状已到 T16+）；一个任务一个 commit。
+- README/docs/代码注释均写中文（提交信息前缀仍用英文）。
+- **缩进用 4 个空格，禁止 tab**（`src/`、`scripts/`、vite 配置、YAML 全适用）；仓库无 formatter 兜底，新代码靠自觉。
 
 ## 结构
 
@@ -40,7 +42,7 @@ node tmp/smoke/run.mjs            # 端到端 smoke（stub dsh 包 + 真 schemas
 | `docs/` | 任务书与迁移记录，**已入库** |
 | `tmp/` | gitignored 工作区：smoke、探针、`commit-msg.txt` |
 
-- `src/client/*.jsx` 是源码；`lib/client.js` 由 `vite.client.config.mjs` 生成：banner/intro/footer 三段式外壳（DSH 官方 tsdown 同款配方）包住 CJS bundle，`id` 必须是包名。顶部 `require()` 是平台模块表查询——**require 白名单 = vite external 白名单**（`react`、`react/jsx-runtime`、`@deepseek-ai/dsh-client-ui-primitives`），改一处必须同步另一处，`check-compat` 探测 7 看守；`require()` 必须是双引号（构建配置里的 `normalize-require-quotes` 负责归一化）。src 模块拆分**不得引入 import 环**——factory 形态的 CJS 循环依赖是致命错误。构建顺序：host 先（清 `lib/`）、client 后（`pnpm build` 的 `&&` 保证）。
+- `src/client/*.jsx` 是源码；`lib/client.js` 由 `vite.client.config.mjs` 生成：banner/intro/footer 三段式外壳（DSH 官方 tsdown 同款配方）包住 CJS bundle，`id` 必须是包名。顶部 `require()` 是平台模块表查询——**require 白名单 = vite external 白名单**（`react`、`react/jsx-runtime`、`@deepseek-ai/dsh-client-ui-primitives`），改一处必须同步另一处，`check-compat` 探测 7 看守；`require()` 必须是双引号（构建配置里的 `normalize-require-quotes` 负责归一化）。产物不携带注释：两个 vite 配置的 `strip-comments` 插件用 `transformWithEsbuild(minifyWhitespace)` 剥注释并压空白（**不动标识符/语法**——`check-compat` 的 `require("...")` 探测与 factory `id` 契约依赖它们）；client 侧 `plugins: [normalizeRequireQuotes, stripComments]` **顺序不能反**（esbuild 会把字符串统一成双引号，先剥会毁掉去重用的单引号模式）。src 模块拆分**不得引入 import 环**——factory 形态的 CJS 循环依赖是致命错误。构建顺序：host 先（清 `lib/`）、client 后（`pnpm build` 的 `&&` 保证）。
 - `docs/increment-plan.md` / `docs/optimization-plan.md` 是自包含任务书（含契约出入教训），改门禁语义前值得读；`docs/*migration*` 记录 src/+Vite 迁移的计划与现场修正（含 vite 配置陷阱）。
 - `cordis.patch.yml` 只挂 host 插件行；**patch 的 `config` override 是整体替换**，写 override 要带全字段。
 
@@ -65,4 +67,4 @@ node tmp/smoke/run.mjs            # 端到端 smoke（stub dsh 包 + 真 schemas
 ## 环境
 
 - 开发机是 Windows + PowerShell；DSH Desktop 的 asar 通常在 `%LOCALAPPDATA%\Programs\DeepSeek Harness\resources\app.asar`。
-- Node `^22.19.0 || >=24.0.0`。`@deepseek-ai/*` 由 dsh 宿主提供、构建时一律 external——`node_modules` 只装 vite/react 开发依赖（react 仅供 JSX 解析，绝不进产物），产物不得引用它们以外的任何运行时依赖。本地跑 `src/host/index.js` 需要 stub（参考 `tmp/smoke/run.mjs`）。
+- Node `^22.19.0 || >=24.0.0`。`@deepseek-ai/*` 由 dsh 宿主提供、构建时一律 external——源码 import 过的宿主包（`@deepseek-ai/cordis`、`dsh-session`、`dsh-scope`、`dsh-user-approval`、`dsh-client-ui-primitives`、`schemastery`）已钉进 `devDependencies`（版本对齐本机 asar 的 `0.2.1-rc.2` / 稳定版），**仅供 IDE/本地解析与 smoke stub 对照，绝不进产物**；react 仅供 JSX 解析。产物不得引用这些包以外的任何运行时依赖。本地跑 `src/host/index.js` 需要 stub（参考 `tmp/smoke/run.mjs`）。

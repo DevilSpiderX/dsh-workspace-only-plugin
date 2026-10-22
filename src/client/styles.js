@@ -1,9 +1,12 @@
 export const PLUGIN_ID = "dsh-workspace-only-plugin";
-// Settings page, lists and the composer trigger follow the platform's
-// component CSS (PermissionRow.module.css / PermissionSelect.module.css /
-// Input.module.css in @deepseek-ai/dsh-client-ui-primitives) using the
-// same --dsw-* design tokens; Menu/Input/Button themselves come from
-// ui-primitives and carry their own official styles.
+
+/**
+ * 设置页、列表和 composer 触发器沿用平台组件 CSS
+ * （@deepseek-ai/dsh-client-ui-primitives 里的 PermissionRow.module.css /
+ * PermissionSelect.module.css / Input.module.css），使用同一套 --dsw-*
+ * 设计令牌；Menu/Input/Button 本体来自 ui-primitives，自带官方样式。
+ * @type {string}
+ */
 export const CSS = `
 [data-workspace-only-page]{box-sizing:border-box;width:100%;max-width:720px;margin:0 auto;flex-direction:column;gap:12px;padding:0 0 24px;display:flex}
 [data-workspace-only-pageHead]{align-items:center;justify-content:space-between;gap:12px;display:flex}
@@ -56,10 +59,11 @@ export const CSS = `
 [data-workspace-only-pending]{border-radius:var(--dsw-radius-sm);height:28px;padding:0 8px;gap:6px;background:transparent;border:none;cursor:pointer;align-items:center;font-size:12px;line-height:18px;color:var(--dsw-alias-state-warn-primary);display:inline-flex;white-space:nowrap}
 [data-workspace-only-pending]:hover{background:var(--dsw-alias-interactive-bg-hover)}
 [data-workspace-only-pendingDot]{width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-state-warn-primary);flex:none}`;
+
 export function installStyles(document) {
-	if (document.querySelector(`style[data-plugin="${PLUGIN_ID}"]`) !== null) return;
-	const tag = document.createElement("style");
-	tag.dataset.plugin = PLUGIN_ID;
-	tag.textContent = CSS;
-	document.head.appendChild(tag);
+    if (document.querySelector(`style[data-plugin="${PLUGIN_ID}"]`) !== null) return;
+    const tag = document.createElement("style");
+    tag.dataset.plugin = PLUGIN_ID;
+    tag.textContent = CSS;
+    document.head.appendChild(tag);
 }

@@ -1,127 +1,133 @@
 /**
- * Client↔Host management RPC for Workspace Only (tasks B and D).
+ * Client↔Host 管理 RPC（任务 B 与 D）。
  *
- * The Web client cannot push state into the Host on its own, and the Host's
- * forwarded-event allowlist is compiled into `dsh-api-remotes`, so the two
- * directions are split:
+ * Web 客户端无法自行向 Host 推送状态，而 Host 的转发事件白名单是编译进
+ * `dsh-api-remotes` 的，因此两个方向被拆开：
  *
- *   Host → Client (asking):  `ctx.userQuestions.ask()`  — see `ask.js`.
- *   Client → Host (managing): this service, a Typert "source-mode" Remote
- *   service under the `workspaceOnly` namespace. The API Gateway discovers
- *   services whose instance carries a `typertRemote` binding and whose class
- *   prototype carries the Remote method descriptor (the exact structure
- *   `bindTypertRemote`/`Remote` produce), then dispatches
- *   `ctx.remote.<namespace>.<method>(...)` calls here. No generated Typert
- *   artifact is required: source-mode descriptors validate arguments as plain
- *   JSON, and method parameter names are read from the source signature.
+ *   Host → Client（提问）：`ctx.userQuestions.ask()` —— 见 `ask.js`。
+ *   Client → Host（管理）：即本服务，一个 Typert "source-mode" Remote 服务，
+ *   命名空间为 `workspaceOnly`。API Gateway 会发现实例携带 `typertRemote` binding、
+ *   且类原型携带 Remote 方法描述符（即 `bindTypertRemote`/`Remote` 产出的确切结构）
+ *   的服务，然后把 `ctx.remote.<namespace>.<method>(...)` 调用派发到这里。
+ *   不需要生成 Typert 产物：source-mode 描述符以普通 JSON 校验参数，方法参数名
+ *   从源码签名读取。
  *
- * `@deepseek-ai/dsh-typert-protocol` is deliberately NOT imported — the
- * binding and descriptor shapes are reproduced literally so this plugin keeps
- * loading on compositions where that package is absent.
+ * `@deepseek-ai/dsh-typert-protocol` 是刻意不 import 的 —— binding 与描述符的
+ * 形状按字面复刻，这样在缺少该包的 composition 上本插件仍可加载。
  */
-import { Service } from "@deepseek-ai/cordis";
+import {Service} from "@deepseek-ai/cordis";
 
-/** Prototype key the Gateway's `remoteMethods()` reads. */
+/** Gateway 的 `remoteMethods()` 读取的原型键。 */
 const REMOTE_METHODS_KEY = "@deepseek-ai/dsh-typert-protocol/remote-methods";
 
-/** The service key and wire namespace of this plugin's Remote surface. */
+/** 本插件 Remote 表面的服务键与线上命名空间。 */
 export const REMOTE_SERVICE_KEY = "workspaceOnly";
 export const REMOTE_NAMESPACE = "workspaceOnly";
 
-/** Remote method names exposed to `ctx.remote.workspaceOnly.*` / `workspaceOnly/*` RPC. */
+/** 暴露给 `ctx.remote.workspaceOnly.*` / `workspaceOnly/*` RPC 的 Remote 方法名。 */
 export const REMOTE_METHODS = ["snapshot", "setScope", "addAlways", "addGlobalAlways", "removeAlways", "addDeny", "removeDeny", "clearRecent", "announce", "decide", "pendingList"];
 
 /**
- * Management surface handed in by the plugin: pure operations over Config and
- * session state. Every hook returns plain JSON.
+ * 插件交进来的管理表面：对 Config 与会话状态的纯操作。每个钩子都返回普通 JSON。
  */
 var WorkspaceOnlyRemoteService = class extends Service {
-	hooks;
-	constructor(ctx, hooks) {
-		super(ctx, REMOTE_SERVICE_KEY);
-		this.hooks = hooks;
-		// Equivalent of `bindTypertRemote(this, key, { namespace })`: the frozen
-		// binding the Gateway validates on every source-mode dispatch.
-		this.typertRemote = Object.freeze({
-			service: this,
-			serviceKey: REMOTE_SERVICE_KEY,
-			namespace: REMOTE_NAMESPACE
-		});
-	}
-	/** Current switch, whitelist (plus the resolved BUILT-IN default whitelist), recent asks, and one session's access scope. */
-	async snapshot(sessionId) {
-		return this.hooks.snapshot(sessionId);
-	}
-	/** Set one session's access scope: `workspace` / `outside-read` / `outside-write`. */
-	async setScope(sessionId, scope) {
-		return this.hooks.setScope(sessionId, scope);
-	}
-	/** Persist a SESSION-SCOPED whitelist entry (stamped with the granting session's root). */
-	async addAlways(dir, sessionId) {
-		return this.hooks.addAlways(dir, sessionId);
-	}
-	/** Persist a GLOBAL whitelist entry (plain string; managed in Settings). */
-	async addGlobalAlways(dir) {
-		return this.hooks.addGlobalAlways(dir);
-	}
-	/** Remove one whitelist entry (string or `{ root, dir }`, task T9). */
-	async removeAlways(entry) {
-		return this.hooks.removeAlways(entry);
-	}
-	/** Task T5: persist one never-allow rule (directory prefix or glob). */
-	async addDeny(entry) {
-		return this.hooks.addDeny(entry);
-	}
-	/** Remove one deny rule. */
-	async removeDeny(entry) {
-		return this.hooks.removeDeny(entry);
-	}
-	/** Drop the recent-ask list shown in settings. */
-	async clearRecent() {
-		return this.hooks.clearRecent();
-	}
-	/** Task B: a composer panel reports it is on screen for `requestId`. */
-	async announce(requestId) {
-		return this.hooks.announce(requestId);
-	}
-	/** Task B: the composer panel submits `once` / `always` / `deny`. */
-	async decide(requestId, choice) {
-		return this.hooks.decide(requestId, choice);
-	}
-	/** Pending gate asks (diagnostics for the settings surface). */
-	async pendingList() {
-		return this.hooks.pendingList();
-	}
+    hooks;
+
+    constructor(ctx, hooks) {
+        super(ctx, REMOTE_SERVICE_KEY);
+        this.hooks = hooks;
+        // 等价于 `bindTypertRemote(this, key, { namespace })`：Gateway 在每次
+        // source-mode 派发时校验的冻结 binding。
+        this.typertRemote = Object.freeze({
+            service: this,
+            serviceKey: REMOTE_SERVICE_KEY,
+            namespace: REMOTE_NAMESPACE
+        });
+    }
+
+    /** 当前开关、白名单（含解析后的内置默认白名单）、最近的 ask，以及单个会话的访问档位。 */
+    async snapshot(sessionId) {
+        return this.hooks.snapshot(sessionId);
+    }
+
+    /** 设置单个会话的访问档位：`workspace` / `outside-read` / `outside-write`。 */
+    async setScope(sessionId, scope) {
+        return this.hooks.setScope(sessionId, scope);
+    }
+
+    /** 持久化一条会话级白名单条目（盖上授权会话的 root）。 */
+    async addAlways(dir, sessionId) {
+        return this.hooks.addAlways(dir, sessionId);
+    }
+
+    /** 持久化一条全局白名单条目（纯字符串；在设置页管理）。 */
+    async addGlobalAlways(dir) {
+        return this.hooks.addGlobalAlways(dir);
+    }
+
+    /** 移除一条白名单条目（字符串或 `{ root, dir }`，任务 T9）。 */
+    async removeAlways(entry) {
+        return this.hooks.removeAlways(entry);
+    }
+
+    /** 任务 T5：持久化一条永不允许规则（目录前缀或 glob）。 */
+    async addDeny(entry) {
+        return this.hooks.addDeny(entry);
+    }
+
+    /** 移除一条 deny 规则。 */
+    async removeDeny(entry) {
+        return this.hooks.removeDeny(entry);
+    }
+
+    /** 清空设置页展示的最近 ask 列表。 */
+    async clearRecent() {
+        return this.hooks.clearRecent();
+    }
+
+    /** 任务 B：composer 面板报告自己已出现在 `requestId` 对应的屏幕上。 */
+    async announce(requestId) {
+        return this.hooks.announce(requestId);
+    }
+
+    /** 任务 B：composer 面板提交 `once` / `always` / `deny`。 */
+    async decide(requestId, choice) {
+        return this.hooks.decide(requestId, choice);
+    }
+
+    /** 待决的门禁 ask（供设置表面做诊断）。 */
+    async pendingList() {
+        return this.hooks.pendingList();
+    }
 };
 
-// Remote method descriptor, byte-compatible with what `Remote` + `mark()`
-// attach under the class prototype (version 1, direct invocation markers).
+// Remote 方法描述符，与 `Remote` + `mark()` 挂到类原型下的结构字节级兼容
+// （version 1，直接调用标记）。
 Object.defineProperty(WorkspaceOnlyRemoteService.prototype, REMOTE_METHODS_KEY, {
-	configurable: true,
-	value: Object.freeze({
-		version: 1,
-		methods: Object.freeze(REMOTE_METHODS.map((method) => Object.freeze({
-			method,
-			invocation: Object.freeze({ kind: "direct" })
-		})))
-	})
+    configurable: true,
+    value: Object.freeze({
+        version: 1,
+        methods: Object.freeze(REMOTE_METHODS.map((method) => Object.freeze({
+            method,
+            invocation: Object.freeze({kind: "direct"})
+        })))
+    })
 });
 
 /**
- * Register the Remote service on the host context.
+ * 在宿主上下文上注册 Remote 服务。
  *
- * @param ctx - host context.
- * @param hooks - management operations (see {@link WorkspaceOnlyRemoteService}).
- * @returns the service instance, or `undefined` when the Cordis Service base
- *   is unavailable in this composition (management UI then degrades to the
- *   settings form only).
+ * @param ctx - 宿主上下文。
+ * @param hooks - 管理操作（见 {@link WorkspaceOnlyRemoteService}）。
+ * @returns 服务实例；若本 composition 中 Cordis Service 基类不可用则返回 `undefined`
+ *   （此时管理 UI 降级为仅设置表单）。
  */
 export function createRemoteService(ctx, hooks) {
-	if (Service === void 0) return void 0;
-	try {
-		const service = new WorkspaceOnlyRemoteService(ctx, hooks);
-		return service;
-	} catch {
-		return void 0;
-	}
+    if (Service === void 0) return void 0;
+    try {
+        const service = new WorkspaceOnlyRemoteService(ctx, hooks);
+        return service;
+    } catch {
+        return void 0;
+    }
 }

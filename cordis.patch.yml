@@ -1,6 +1,5 @@
-# dsh-workspace-only-plugin bundle patch: mounts the host plugin row. The
-# `permission` row is left untouched so this layer never collides with other
-# bundles' permission presets (each row is last-write-wins per bundle order).
+# dsh-workspace-only-plugin bundle patch：挂载 host 插件行。`permission` 行保持
+# 不动，避免与其他 bundle 的权限预设冲突（每行按 bundle 顺序后者覆盖前者）。
 
 - insert:
     - id: workspace-only
