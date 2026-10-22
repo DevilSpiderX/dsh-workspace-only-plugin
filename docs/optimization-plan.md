@@ -245,6 +245,7 @@ MiMo 的做法是展开后按真实路径判定（`bash.ts` 的 `home()`/`expand
 | D4 | T5 deny 压过会话放飞（bypass） | 对齐 MiMo："Deny rules ... still apply"（skipAll 不豁免 deny） |
 | D5 | T4 敏感 always 存 pattern（`sensitiveAlways`），不混入目录白名单 | 两种语义正交，混用会让"总是允许本目录"意外放行敏感文件 |
 | D6 | T8 默认关闭（opt-in） | 全量扫描对文本参数有误报面，不改变默认行为最稳 |
+| D7 | 不引入 MiMo 式 tree-sitter 级 shell 解析（2026-10 评估：能做但没必要） | ①误报=多问一次是刻意保守（`never a silent miss`），tree-sitter 的收益主要是降误报；②动态构造漏报 tree-sitter 无解——MiMo 的 `argPath` 对 dynamic 也不询问；③MiMo 的精度大头来自 FILES 命令白名单 + 权限 pattern 体系（命令级权限系统的语义），围栏无此需求；④wasm 依赖（web-tree-sitter + bash/powershell grammar，MB 级）破坏零依赖、scanner 纯词法可独立测的架构基石，且 MiMo 的 Bun 式 `import(…wasm)` 在 DSH 的 Electron/Node（asar）下要改运行时加载。许可无障碍（MIT + USE_RESTRICTIONS 不碍开发用途）。若 shell 误报成为实操痛点：先收紧词法规则（verify-scanner 对照组先行），仍不足再 opt-in `Config.shellParser`（懒加载 wasm、解析失败回退词法层、移植段带 MIT notice） |
 
 ## 6. 约定、风险与回归
 
