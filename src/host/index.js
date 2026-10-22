@@ -216,6 +216,40 @@ function escapesViaRealpath(target, root) {
 	return !lexicallyWithin(realTarget, realRoot);
 }
 
+/**
+ * Task T14: the gate's runtime-context narration for one session scope.
+ *
+ * The platform assembles its own `sandbox:policy` ("danger-full-access …
+ * does not restrict file modifications"), `approval:policy` ("approval
+ * prompts are disabled … rejected automatically"), and delegation clauses
+ * ("permission scope … cannot be widened") into the SAME runtime-context
+ * snapshot. Read side by side they cancel each other out — the model
+ * cannot tell whether an outside-workspace write prompts, is rejected, or
+ * runs silently. Every variant therefore opens with an explicit
+ * precedence assertion: while the gate is active its rules win over any
+ * conflicting wording above. The tool table mirrors `toolAccessKind`
+ * exactly (shells always count as writes), and the effective
+ * always-whitelist is listed so the model knows which directories never
+ * prompt.
+ */
+function narrationFor(scope, dirs) {
+	const list = Array.isArray(dirs) ? dirs : [];
+	const granted = list.length === 0
+		? "none"
+		: `${list.slice(0, 20).join(", ")}${list.length > 20 ? ` (+${list.length - 20} more)` : ""}`;
+	const override = "Workspace Only is ACTIVE for this session and OVERRIDES every sandbox/approval statement above — where they conflict with this paragraph, this paragraph wins.";
+	// The rules shared by the two confining scopes (not by 完全放开).
+	const never = " Rules that never relax: sensitive files (*.env, *.pem, *.key, …) ask even INSIDE the workspace; deny (never-allow) rules beat every scope and whitelist entry and cannot be granted. An unanswered card or a timeout DENIES the call (fail closed). Do not try to bypass this gate with `sandbox_permissions` — it is skipped only when the official escalation prompt is guaranteed to appear; a repeated or identical escalation request still hits this card. When a card appears, wait for the user's decision: never guess its outcome, never retry a denied call unchanged, and if this scope forbids access you need, state the limitation to the user instead of fighting the gate.";
+	const always = ` Always-allowed directories (granted WITHOUT a prompt): ${granted}.`;
+	if (scope === SCOPE.outsideWrite) {
+		return `${override} Scope: 完全放开 (fully released): file access outside the session workspace runs WITHOUT the Workspace Only prompt for every tool — the user released this session. Sensitive files (*.env, *.pem, *.key, …) still ask in every case, and deny (never-allow) rules still block.`;
+	}
+	if (scope === SCOPE.outsideRead) {
+		return `${override} Scope: 工作区外只读 (outside-read): READ-only tools (read, read_image, glob, grep) may freely READ outside-workspace paths; write and edit still ask before touching an outside path. Command-line tools (bash, pwsh) always count as WRITES — command text cannot be told apart statically, so ANY outside path inside a shell command asks the user even when the command only reads. Any other tool counts as a write too.${always}${never}`;
+	}
+	return `${override} Scope: 仅工作区内 (workspace-only): every file access OUTSIDE the session workspace asks the user on a three-choice card (allow once / always allow this directory / deny) — in every sandbox mode, and even when the approval policy is never. Inside the workspace runs normally except sensitive files.${always}${never}`;
+}
+
 export function apply(ctx, config = {}) {
 	const isEnabled = () => readVolatile(config.enabled) === true;
 	/** One whitelist entry — a legacy/global string or a `{ root, dir }` workspace-scoped item (task T9). */
@@ -329,6 +363,23 @@ export function apply(ctx, config = {}) {
 		});
 	}
 
+	/**
+	 * Task T14: the always-allowed directories effective for one session
+	 * root, for the runtime-context narration — the built-in default plus
+	 * global entries and this root's workspace-scoped entries. Same
+	 * matching as {@link alwaysAllows}, minus the path containment.
+	 */
+	function activeAlwaysDirs(root) {
+		const dirs = builtinAlwaysDirs();
+		for (const raw of alwaysList()) {
+			const entry = alwaysEntry(raw);
+			if (entry === void 0) continue;
+			if (entry.root !== void 0 && !sameLocation(entry.root, root)) continue;
+			if (!dirs.includes(entry.dir)) dirs.push(entry.dir);
+		}
+		return dirs;
+	}
+
 	// Opt-in display rename of the `workspace-write` preset.
 	if (config.renamePresetLabel === true) {
 		const presets = ctx.permissionPresets.presets;
@@ -343,18 +394,21 @@ export function apply(ctx, config = {}) {
 	// resolver and pins the result onto the child's own log.
 	const resolveParent = (id) => resolveSession(ctx, id);
 
-	// Narration: the model must know the gate is active in every mode, and
-	// must know when this session deliberately runs with a wider scope.
+	// Narration (task T14): the model must know the gate is active and
+	// OVERRIDES the platform's own sandbox/approval clauses, which tools
+	// count as reads or writes at this session's scope, and which
+	// directories never prompt.
 	ctx.systemPrompt.context({
 		name: "workspace-only",
-		order: 116,
+		// After the platform's sandbox:policy (110) / approval:policy (115)
+		// and the delegation clauses (120/125), so this paragraph reads as
+		// the last — and governing — word on permissions.
+		order: 126,
 		text: (context) => {
 			const session = context.agent?.session;
 			if (session === void 0 || !isEnabled()) return "";
 			const scope = sessionScope(session, resolveParent);
-			if (scope === SCOPE.outsideWrite) return "Workspace Only is fully released for this session (完全放开): file access outside the session workspace runs without the Workspace Only prompt (the user released this session); sensitive files still ask in every case.";
-			if (scope === SCOPE.outsideRead) return "Workspace Only is on with this session set to outside-read (工作区外只读): outside-workspace READS run without the Workspace Only prompt, outside-workspace WRITES still ask the user for approval; sensitive files ask in every case.";
-			return "Workspace Only is on: in every mode, file access outside the session workspace asks the user for approval — the approval prompt appears even when the approval policy is never.";
+			return narrationFor(scope, activeAlwaysDirs(session?.header?.cwd));
 		}
 	});
 

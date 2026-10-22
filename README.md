@@ -135,6 +135,18 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
 | 只要官方围栏 | 任意 | 关 | —（不生效） |
 | ⚠️ 不推荐 | `danger-full-access` | 关 | —（裸奔，仅限一次性隔离环境） |
 
+## 运行上下文注入
+
+门禁开启时，插件向运行上下文快照注入一段 `workspace-only` 叙事（`systemPrompt.context`，**order 126**——排在官方 `sandbox:policy`（110）、`approval:policy`（115）与子代理 delegation（120/125）之后，作为权限语义的最后一句）。官方三段在 `danger-full-access` / `never` / 子代理会话里分别宣称"不限制文件修改""审批弹窗已禁用自动拒绝""权限固定不可放宽"，与门禁语义直接冲突（模型左右脑互搏），因此**每档文案都以优先级声明开头**：Workspace Only 开启期间，与本段冲突的 sandbox/approval 表述一律以本段为准。
+
+文案按会话档位裁剪，内容包括：
+
+- **工具口径**（与 `toolAccessKind` 一致）：`read`/`read_image`/`glob`/`grep` 算读；`write`/`edit` 算写；**命令行工具 `bash`/`pwsh` 一律按写计**（命令文本无法静态分辨读写，命令内任何越界路径都弹审批，即使命令只是读）；其他/未知工具保守按写。仅「工作区外只读」档展开此表（该档的口径边界最容易被误解）。
+- **目录白名单列表**：注入当前会话**实际生效**的 always-allowed 目录（全局条目 + `root` 匹配本会话工作区的会话级条目 + 内置默认 `dsh-primary-runtime`），标注"这些目录命中即放行、无提示"；超过 20 条截断显示。白名单变更后下一次上下文组装即生效（文案是活的回调，不是一次性快照）。
+- **不变规则尾注**：三键语义（仅此一次/总是允许该目录/拒绝）、超时与无人应答=拒绝（fail-closed）、敏感文件任何档位都弹、deny 规则最高优先、不要用 `sandbox_permissions` 逃逸（仅严格升权跳过门禁）、卡片弹出后等待用户决策且拒绝后不要原样重试。
+
+「完全放开」档只声明放行范围与残留约束（敏感仍弹、deny 仍拦），不列白名单（全部放行无意义）。
+
 ## 边界与残余面
 
 - 收编是**工具层词法门禁**，非内核隔离。home 形态（`~`/`$HOME`/`${HOME}`/`%USERPROFILE%`/`%HOMEPATH%`/`$env:USERPROFILE`/`$env:HOMEPATH`）已统一展开为真实路径判定（单引号内的字面量除外）；扫描器看不到的路径（完全动态计算、其他环境变量拼接）是文档化的残余面，与 auto-mode 插件同级哲学。
