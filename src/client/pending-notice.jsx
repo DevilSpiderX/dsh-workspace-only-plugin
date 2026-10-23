@@ -14,12 +14,14 @@ export function WorkspaceOnlyPendingBadge({sessionId, useSessions, usePending, o
     const byId = useSessions((state) => state.byId);
     // 徽章属于被搁置 ask 的父会话：卡片在那个子代理自己的 composer 里，
     // 父视图看不到。无关会话必须保持干净——这是给本对话子会话的导航
-    // 提示，不是全局警报。
-    // 列表行的子代理链接是 `SessionSummary.parentId`（配对
-    // `origin: 'subagent'`）；`byId` 行不带 `subagent.address`——
-    // 那个形状在 per-Session 的 `useSession` 快照上。读错字段过滤
-    // 永远不命中：卡片在、徽章无。
-    const visible = entries.filter((entry) => byId[entry.sessionId]?.parentId === sessionId);
+    // 提示，不是全局警报。T21：优先用 ask 载荷自带的 `parentSessionId`
+    //（host 的 header.parentSession，权威）判定；`byId` 行的 `parentId`
+    // 只作兜底——刚启动的子代理可能还没进列表快照，只靠它过滤会让徽章
+    // 在最需要的时候不亮（「徽章消失」的根因）。列表行的子代理链接仍是
+    // `SessionSummary.parentId`（配对 `origin: 'subagent'`）；`byId` 行
+    // 不带 `subagent.address`——那个形状在 per-Session 的 `useSession`
+    // 快照上。
+    const visible = entries.filter((entry) => entry.parentSessionId === sessionId || byId[entry.sessionId]?.parentId === sessionId);
     if (visible.length === 0) return null;
     const tip = [t("pending.tip", {n: visible.length}), ...visible.map((entry) => {
         const label = byId[entry.sessionId]?.title ?? entry.toolName;

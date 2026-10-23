@@ -75,8 +75,12 @@ function apply(ctx) {
         })
     }, WorkspaceOnlyWhitelistView));
     // 任务 B 的三键面板：在 composer 里落座一个 pending ask，
-    // 与平台的权限升权接管完全同款。
-    const registerPendingInteraction = ctx.uiSession.registerPendingInteraction(() => 0);
+    // 与平台的权限升权接管完全同款。T21：影子黄点与卡片共用这一个
+    // pending 域，precedence 按 `source` 区分——卡片 0、影子 -1（平台赢家
+    // 规则 `precedence >= previous` 后到赢，卡片与官方审批卡永远压过影子，
+    // 绝不遮蔽真实卡片）。曾为影子单独注册第二个域，与首版黄点全部失效
+    // （卡片/徽章/黄点一齐消失）的时间点吻合，合并进单域后不再有该风险面。
+    const registerPendingInteraction = ctx.uiSession.registerPendingInteraction((interaction) => interaction?.source === "workspace-only-notice" ? -1 : 0);
     // 任务 T12：按 requestId 记录在场的卡片。重复投递的 ask 负载绝不能
     // 二次落座——平台域对重复 key 会抛错，多余的席位卡片永远关不掉
     //（「卡片点了不关」的根因）。
@@ -89,13 +93,10 @@ function apply(ctx) {
     const pendingStore = createSnapshotStore({entries: []});
     // T19：父会话行的「待审批」黄点。子代理的三键卡片在子代理自己的 composer
     // 里，父视图与会话行都看不见它。这个影子 pending 投影把平台的 warning
-    // 状态点（行尾「待审批」标签）挂到父会话的会话行上。precedence 恒 -1：
-    // 平台的赢家规则是 `precedence >= previous` 后到赢，官方审批卡与本插件的
-    // 卡片（都是 0）永远压过影子——绝不遮蔽任何真实卡片；影子只在该会话没有
-    // 任何其他 pending 时才投影黄点。影子不设 `source: "workspace-only"`、
+    // 状态点（行尾「待审批」标签）挂到父会话的会话行上。影子走卡片同一个
+    // pending 域（precedence -1，见上），不设 `source: "workspace-only"`、
     // 也不是官方 PendingApproval 实例，composer 渲染链无人认领它，因此不会
     // 渲染出任何卡片。delegate 空转：影子不承载决策，插件卸载不影响 ask 裁决。
-    const shadowPublish = ctx.uiSession.registerPendingInteraction(() => -1);
     const rowNotices = new Map();
     const raiseRowNotice = (requestId, parentSessionId) => {
         if (typeof parentSessionId !== "string" || parentSessionId === "") return;
@@ -103,10 +104,15 @@ function apply(ctx) {
         let remove = () => {
         };
         try {
-            remove = shadowPublish({
+            remove = registerPendingInteraction({
                 key: `workspace-only-notice:${requestId}`,
                 kind: "approval",
-                sessionId: parentSessionId
+                // 非 "workspace-only"：composer 链对它无人认领，只投影行状态。
+                source: "workspace-only-notice",
+                sessionId: parentSessionId,
+                result: Promise.resolve("deny"),
+                answerable: false,
+                answer: () => Promise.resolve()
             }, async () => {
             });
         } catch {
@@ -250,10 +256,12 @@ function apply(ctx) {
     };
     // 任务 T12：ask 在非本客户端点击的情况下结掉时（对话框超时、批量
     // 放行、另一个标签页的裁决），Host 会广播 `askDone`——撤掉卡片，
-    // 别让过期席位赖在 composer 里。
+    // 别让过期席位赖在 composer 里。`seats` 存的是 dismiss 函数本体，
+    // 直接调用它（曾经误写 `?.dismiss()`——TypeError 会把撤卡整个炸掉，
+    // 黄点与卡片都残留）。
     const closePanel = (done) => {
         if (done === null || done === void 0 || typeof done.requestId !== "string") return;
-        seats.get(done.requestId)?.dismiss();
+        seats.get(done.requestId)?.();
     };
     ctx.slots.inject("conversation.composer", () => ctx.slots.register({
         name: "conversation.composer",
