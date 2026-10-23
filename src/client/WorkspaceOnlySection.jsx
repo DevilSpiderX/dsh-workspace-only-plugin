@@ -1,6 +1,8 @@
 import {useEffect, useState} from "react";
 import {Button, Input} from "@deepseek-ai/dsh-client-ui-primitives";
 import {globalEntries, SCOPE_OPTIONS} from "./shared.js";
+import css from "./WorkspaceOnlySection.module.css";
+import entryRowCss from "./entryRow.module.css";
 
 /**
  * 设置分区页（独立导航项，`settings.section`）：全局开关、全局总是
@@ -44,12 +46,12 @@ export function WorkspaceOnlySection(
         return option === void 0 ? String(scope) : t(option.labelKey);
     };
     return (
-        <div data-workspace-only-page>
-            <div data-workspace-only-pageHead>
-                <div data-workspace-only-pageTitle>{t("title")}</div>
+        <div className={css.page}>
+            <div className={css.pageHead}>
+                <div className={css.pageTitle}>{t("title")}</div>
                 <button
                     type="button"
-                    data-workspace-only-toggle
+                    className={css.toggle}
                     aria-pressed={enabled}
                     disabled={busy || !state.writable}
                     onClick={() => {
@@ -59,27 +61,27 @@ export function WorkspaceOnlySection(
                     {label}
                 </button>
             </div>
-            <div data-workspace-only-desc role={state.error === null ? void 0 : "alert"}>{description}</div>
-            <div data-workspace-only-panel>
-                <div data-workspace-only-list>
-                    <div data-workspace-only-title>{t("always.builtinTitle")}</div>
+            <div className={css.desc} role={state.error === null ? void 0 : "alert"}>{description}</div>
+            <div className={css.panel}>
+                <div className={entryRowCss.list}>
+                    <div className={css.title}>{t("always.builtinTitle")}</div>
                     {builtin.map((entry) => (
-                        <div data-workspace-only-item key={`builtin:${entry}`}>
-                            <span data-workspace-only-path title={entry}>{entry}</span>
+                        <div className={entryRowCss.item} key={`builtin:${entry}`}>
+                            <span className={entryRowCss.path} title={entry}>{entry}</span>
                         </div>
                     ))}
-                    <div data-workspace-only-desc>{t("always.builtinHint")}</div>
+                    <div className={css.desc}>{t("always.builtinHint")}</div>
                 </div>
-                <div data-workspace-only-list>
-                    <div data-workspace-only-title>{t("always.title")}</div>
+                <div className={entryRowCss.list}>
+                    <div className={css.title}>{t("always.title")}</div>
                     {globals.length === 0 ? (
-                        <div data-workspace-only-item>{t("always.empty")}</div>
+                        <div className={entryRowCss.item}>{t("always.empty")}</div>
                     ) : globals.map((entry) => (
-                        <div data-workspace-only-item key={entry}>
-                            <span data-workspace-only-path title={entry}>{entry}</span>
+                        <div className={entryRowCss.item} key={entry}>
+                            <span className={entryRowCss.path} title={entry}>{entry}</span>
                             <button
                                 type="button"
-                                data-workspace-only-mini
+                                className={entryRowCss.mini}
                                 disabled={busy}
                                 onClick={() => {
                                     removeAlways(entry);
@@ -89,9 +91,9 @@ export function WorkspaceOnlySection(
                             </button>
                         </div>
                     ))}
-                    <div data-workspace-only-fieldRow>
+                    <div className={entryRowCss.fieldRow}>
                         <Input
-                            className="workspaceOnlyGrow"
+                            className={entryRowCss.grow}
                             value={allowDraft}
                             placeholder={t("always.placeholder")}
                             disabled={busy}
@@ -123,16 +125,16 @@ export function WorkspaceOnlySection(
                         </Button>
                     </div>
                 </div>
-                <div data-workspace-only-list>
-                    <div data-workspace-only-title>{t("deny.title")}</div>
+                <div className={entryRowCss.list}>
+                    <div className={css.title}>{t("deny.title")}</div>
                     {deny.length === 0 ? (
-                        <div data-workspace-only-item>{t("deny.empty")}</div>
+                        <div className={entryRowCss.item}>{t("deny.empty")}</div>
                     ) : deny.map((entry) => (
-                        <div data-workspace-only-item key={entry}>
-                            <span data-workspace-only-path title={entry}>{entry}</span>
+                        <div className={entryRowCss.item} key={entry}>
+                            <span className={entryRowCss.path} title={entry}>{entry}</span>
                             <button
                                 type="button"
-                                data-workspace-only-mini
+                                className={entryRowCss.mini}
                                 disabled={busy}
                                 onClick={() => {
                                     removeDeny(entry);
@@ -142,9 +144,9 @@ export function WorkspaceOnlySection(
                             </button>
                         </div>
                     ))}
-                    <div data-workspace-only-fieldRow>
+                    <div className={entryRowCss.fieldRow}>
                         <Input
-                            className="workspaceOnlyGrow"
+                            className={entryRowCss.grow}
                             value={denyDraft}
                             placeholder={t("deny.placeholder")}
                             disabled={busy}
@@ -177,12 +179,12 @@ export function WorkspaceOnlySection(
                     </div>
                 </div>
                 {recent.length === 0 ? null : (
-                    <div data-workspace-only-list>
-                        <div data-workspace-only-title>
+                    <div className={entryRowCss.list}>
+                        <div className={css.title}>
                             {t("recent.title")}{" "}
                             <button
                                 type="button"
-                                data-workspace-only-mini
+                                className={entryRowCss.mini}
                                 onClick={() => {
                                     clearRecent();
                                 }}
@@ -191,11 +193,11 @@ export function WorkspaceOnlySection(
                             </button>
                         </div>
                         {recent.slice(0, 20).map((entry) => (
-                            <div data-workspace-only-item key={`${entry.dir}|${entry.at}`}>
-                                <span data-workspace-only-path title={entry.dir}>{entry.dir}</span>
+                            <div className={entryRowCss.item} key={`${entry.dir}|${entry.at}`}>
+                                <span className={entryRowCss.path} title={entry.dir}>{entry.dir}</span>
                                 <button
                                     type="button"
-                                    data-workspace-only-mini
+                                    className={entryRowCss.mini}
                                     disabled={busy}
                                     onClick={() => {
                                         addGlobalAlways(entry.dir);
@@ -208,15 +210,15 @@ export function WorkspaceOnlySection(
                     </div>
                 )}
                 {widened.length === 0 ? null : (
-                    <div data-workspace-only-list>
-                        <div data-workspace-only-title>{t("session.title")}</div>
+                    <div className={entryRowCss.list}>
+                        <div className={css.title}>{t("session.title")}</div>
                         {widened.map((session) => (
-                            <div data-workspace-only-item key={session.id}>
-                                <span data-workspace-only-path title={session.id}>{session.cwd || session.id}</span>
-                                <span data-workspace-only-badge>{scopeLabel(session.scope)}</span>
+                            <div className={entryRowCss.item} key={session.id}>
+                                <span className={entryRowCss.path} title={session.id}>{session.cwd || session.id}</span>
+                                <span className={css.badge}>{scopeLabel(session.scope)}</span>
                                 <button
                                     type="button"
-                                    data-workspace-only-mini
+                                    className={entryRowCss.mini}
                                     disabled={busy}
                                     onClick={() => {
                                         setScope(session.id, "workspace");

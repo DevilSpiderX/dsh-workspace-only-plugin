@@ -1,6 +1,7 @@
 import {useEffect, useState} from "react";
 import {IconChevronDownOutlineRegular, Menu} from "@deepseek-ai/dsh-client-ui-primitives";
 import {SCOPE_OPTIONS, scopeGlyph} from "./shared.js";
+import css from "./WorkspaceOnlyScopeSelect.module.css";
 
 /**
  * 会话档位选择器，位于 composer 工具行、紧挨平台权限选择器——
@@ -42,7 +43,7 @@ export function WorkspaceOnlyScopeSelect({useWorkspaceOnly, sessionId, setScope,
             anchor={
                 <button
                     type="button"
-                    data-workspace-only-scope
+                    className={css.scope}
                     aria-haspopup="menu"
                     aria-expanded={open}
                     title={t("scope.tooltip")}
@@ -51,9 +52,9 @@ export function WorkspaceOnlyScopeSelect({useWorkspaceOnly, sessionId, setScope,
                         setOpen((value) => !value);
                     }}
                 >
-                    <span data-workspace-only-scopeIcon aria-hidden>{scopeGlyph(current.id)}</span>
-                    <span data-workspace-only-scopeLabel>{t(current.labelKey)}</span>
-                    <span data-workspace-only-scopeChevron data-open={String(open)} aria-hidden>
+                    <span className={css.scopeIcon} aria-hidden>{scopeGlyph(current.id)}</span>
+                    <span className={css.scopeLabel}>{t(current.labelKey)}</span>
+                    <span className={css.scopeChevron} data-open={String(open)} aria-hidden>
                         <IconChevronDownOutlineRegular/>
                     </span>
                 </button>

@@ -1,4 +1,5 @@
 import {useEffect, useRef, useState} from "react";
+import css from "./WorkspaceOnlyAskCard.module.css";
 
 /**
  * Composer 接管一个待决门禁 ask——与平台的权限升权面板
@@ -47,24 +48,24 @@ export function WorkspaceOnlyAskCard(props) {
         answer(event.key === "Enter" ? "once" : "deny");
     };
     return (
-        <div data-workspace-only-askRoot aria-busy={answered} onKeyDown={keydown}>
-            <div data-workspace-only-askCard>
-                <div data-workspace-only-askStrip>
-                    <span data-workspace-only-askDot/>
+        <div className={css.askRoot} aria-busy={answered} onKeyDown={keydown}>
+            <div className={css.askCard}>
+                <div className={css.askStrip}>
+                    <span className={css.askDot}/>
                     {t("ask.strip")}
                 </div>
-                <div data-workspace-only-askBody tabIndex={0} role="group">
-                    <div data-workspace-only-askHeadline>{t("ask.headline", {toolName: ask.toolName})}</div>
-                    <div data-workspace-only-askPath>{ask.dir}</div>
-                    <div data-workspace-only-askReason>{ask.reason}</div>
+                <div className={css.askBody} tabIndex={0} role="group">
+                    <div className={css.askHeadline}>{t("ask.headline", {toolName: ask.toolName})}</div>
+                    <div className={css.askPath}>{ask.dir}</div>
+                    <div className={css.askReason}>{ask.reason}</div>
                     {ask.sensitive === true ? null : (
-                        <div data-workspace-only-askReason>{t("ask.alwaysHint")}</div>
+                        <div className={css.askReason}>{t("ask.alwaysHint")}</div>
                     )}
                 </div>
-                <div data-workspace-only-askActions>
+                <div className={css.askActions}>
                     <button
                         type="button"
-                        data-workspace-only-askButton
+                        className={css.askButton}
                         data-variant="danger"
                         disabled={answered}
                         onClick={() => {
@@ -75,7 +76,7 @@ export function WorkspaceOnlyAskCard(props) {
                     </button>
                     <button
                         type="button"
-                        data-workspace-only-askButton
+                        className={css.askButton}
                         data-variant="outline"
                         disabled={answered}
                         onClick={() => {
@@ -86,7 +87,7 @@ export function WorkspaceOnlyAskCard(props) {
                     </button>
                     <button
                         type="button"
-                        data-workspace-only-askButton
+                        className={css.askButton}
                         data-variant="primary"
                         disabled={answered}
                         onClick={() => {

@@ -1,0 +1,62 @@
+/* 目录条目行视觉件：设置页各列表与白名单视图共用
+ *（列表容器 / 单行 / 路径裁剪 / 迷你按钮 / 输入行 / 弹性占位）。 */
+
+.list {
+    flex-direction: column;
+    gap: 4px;
+    display: flex;
+}
+
+.item {
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    line-height: 18px;
+    color: var(--dsw-alias-label-secondary);
+    display: flex;
+}
+
+.path {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    direction: ltr;
+}
+
+.mini {
+    background: transparent;
+    border: 1px solid var(--dsw-alias-border-l2);
+    border-radius: var(--dsw-radius-sm);
+    height: 22px;
+    padding: 0 8px;
+    font-size: 11px;
+    line-height: 20px;
+    color: var(--dsw-alias-label-tertiary);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+}
+
+.mini:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.mini:disabled {
+    cursor: default;
+    opacity: .5;
+}
+
+.fieldRow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.grow {
+    flex: 1;
+    min-width: 0;
+}

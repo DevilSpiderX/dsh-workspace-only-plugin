@@ -1,0 +1,29 @@
+/* T13：会话标题栏的待审批徽章（header.actions 槽位）。 */
+
+.pending {
+    border-radius: var(--dsw-radius-sm);
+    height: 28px;
+    padding: 0 8px;
+    gap: 6px;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    align-items: center;
+    font-size: 12px;
+    line-height: 18px;
+    color: var(--dsw-alias-state-warn-primary);
+    display: inline-flex;
+    white-space: nowrap;
+}
+
+.pending:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.pendingDot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--dsw-alias-state-warn-primary);
+    flex: none;
+}

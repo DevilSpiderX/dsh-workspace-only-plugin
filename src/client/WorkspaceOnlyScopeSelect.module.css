@@ -1,0 +1,61 @@
+/* composer 工具行的会话档位选择器（同款 PermissionSelect 触发器）。 */
+
+.scope {
+    border-radius: var(--dsw-radius-sm);
+    min-width: 0;
+    max-width: 220px;
+    height: 28px;
+    color: var(--dsw-alias-label-secondary);
+    cursor: pointer;
+    background: transparent;
+    border: none;
+    outline: none;
+    align-items: center;
+    gap: 4px;
+    padding: 0 4px 0 8px;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 20px;
+    display: inline-flex;
+}
+
+.scope:hover:not(:disabled) {
+    background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.scope:focus-visible {
+    box-shadow: 0 0 0 2px var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+}
+
+.scope:disabled {
+    color: var(--dsw-alias-label-dimmed);
+    cursor: default;
+}
+
+.scopeIcon {
+    flex: none;
+    display: inline-flex;
+}
+
+.scopeIcon svg {
+    width: 14px;
+    height: 14px;
+}
+
+.scopeLabel {
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.scopeChevron {
+    color: var(--dsw-alias-label-caption);
+    flex: none;
+    transition: transform .12s;
+    display: inline-flex;
+}
+
+.scopeChevron[data-open="true"] {
+    transform: rotate(180deg);
+}

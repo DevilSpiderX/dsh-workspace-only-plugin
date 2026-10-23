@@ -1,4 +1,5 @@
 import {Toast} from "@deepseek-ai/dsh-client-ui-primitives";
+import css from "./pending-notice.module.css";
 
 /**
  * T13：pending ask 的提示面。会话标题栏徽章统计当前视图无法展示的
@@ -26,7 +27,7 @@ export function WorkspaceOnlyPendingBadge({sessionId, useSessions, usePending, o
     return (
         <button
             type="button"
-            data-workspace-only-pending
+            className={css.pending}
             title={tip}
             onClick={() => {
                 const entry = visible[0];
@@ -42,7 +43,7 @@ export function WorkspaceOnlyPendingBadge({sessionId, useSessions, usePending, o
                 openPending(target);
             }}
         >
-            <span data-workspace-only-pendingDot/>
+            <span className={css.pendingDot}/>
             {t("pending.badge", {n: visible.length})}
         </button>
     );

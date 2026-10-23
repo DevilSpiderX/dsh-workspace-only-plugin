@@ -1,3 +1,4 @@
+import path from "node:path";
 import {defineConfig, minifySync} from "vite";
 
 /**
@@ -58,15 +59,58 @@ const stripComments = {
     }
 };
 
+/**
+ * DSH 加载器只吃单文件 JS，样式不能落盘成 .css 产物：把 vite 从
+ * `*.module.css` 提取出来的 css asset 拼接注入 styles.js 的占位符
+ *（`__WORKSPACE_ONLY_CSS__`），再把 asset 从产物里删除。放在
+ * stripComments 之后——CSS 文本不再经过 oxc 重打，字面量原样保留。
+ * @type {{name: string, generateBundle(*, *): void}}
+ */
+const inlineCssAsset = {
+    name: "inline-css-asset",
+    // order: "post"：vite 的 css-post 插件在普通 generateBundle 之后才把
+    // css asset 放进 bundle（实测普通时机只见 chunk），必须后置才看得到。
+    generateBundle: {
+        order: "post",
+        handler(_options, bundle) {
+            const sheets = [];
+            for (const [fileName, output] of Object.entries(bundle)) {
+                if (output.type !== "asset" || !fileName.endsWith(".css")) continue;
+                sheets.push(typeof output.source === "string" ? output.source : Buffer.from(output.source).toString("utf8"));
+                delete bundle[fileName];
+            }
+            if (sheets.length === 0) return;
+            // `/*$vite$:N*/` 是 vite css-post 的 hash 更新标记（dev 用），构建产物
+            // 不带它；它的清洗 hook 跑在我们之后，这里顺手剥掉。
+            const css = sheets.join("\n").replace(/\/\*\$vite\$:\d+\*\/\r?\n?/g, "");
+            for (const output of Object.values(bundle)) {
+                if (output.type !== "chunk") continue;
+                let replaced = false;
+                // 用函数替换：CSS 文本里的 `$&` 之类序列不能进字符串替换模式。
+                output.code = output.code.replace(/(["'`])__WORKSPACE_ONLY_CSS__\1/, () => {
+                    replaced = true;
+                    return JSON.stringify(css);
+                });
+                if (!replaced) throw new Error(`inline-css-asset: placeholder __WORKSPACE_ONLY_CSS__ not found in ${output.fileName}`);
+            }
+        }
+    }
+};
+
 export default defineConfig({
     esbuild: {jsx: "automatic", jsxImportSource: "react", target: "esnext"},
-    // 顺序保持：先把引号归一化 + 去掉重复 toStringTag，再剥注释——
-    // 归一化/去重的正则做在未压形态上匹配最稳，压空白后形态不可逆。
-    plugins: [normalizeRequireQuotes, stripComments],
+    // 类名 = `文件名__类名`：跨文件不撞、产物可读。不能用 `[name]` 模板——
+    // vite 的 css-modules 管线里它恒解析成 "module"（实测），所有文件互相撞。
+    css: {modules: {generateScopedName: (name, filename) => `${path.basename(String(filename)).replace(/\.module\.css.*$/, "")}__${name}`}},
+    // 顺序保持：先把引号归一化 + 去掉重复 toStringTag，再剥注释，
+    // 最后把 CSS 注入占位符——归一化/去重的正则做在未压形态上匹配最稳，
+    // 压空白后形态不可逆；CSS 文本则要避开整段 JS 的重打。
+    plugins: [normalizeRequireQuotes, stripComments, inlineCssAsset],
     build: {
         outDir: "lib",
         emptyOutDir: false, // 保留 host 产物。
         minify: false,
+        cssMinify: true, // CSS 也剥注释压空白（build.minify: false 不连带它）。
         target: "esnext",
         lib: {
             entry: "src/client/index.jsx",

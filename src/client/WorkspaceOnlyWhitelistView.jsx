@@ -1,6 +1,8 @@
 import {useEffect, useState} from "react";
 import {Button, Input} from "@deepseek-ai/dsh-client-ui-primitives";
 import {scopedEntries} from "./shared.js";
+import css from "./WorkspaceOnlyWhitelistView.module.css";
+import entryRowCss from "./entryRow.module.css";
 
 /**
  * 会话页视图（conversation.view 标签页「白名单目录」）：本会话工作区
@@ -19,18 +21,18 @@ export function WorkspaceOnlyWhitelistView({useWorkspaceOnly, sessionId, addEntr
     const root = (state.sessions ?? []).find((entry) => entry.id === sessionId)?.cwd ?? "";
     const entries = scopedEntries(state.always ?? [], root);
     return (
-        <div data-workspace-only-view>
-            <div data-workspace-only-viewTitle>{t("panel.title")}</div>
+        <div className={css.view}>
+            <div className={css.viewTitle}>{t("panel.title")}</div>
             <div
-                data-workspace-only-viewDesc>{typeof root === "string" && root !== "" ? t("panel.desc", {root}) : t("panel.descNoRoot")}</div>
+                className={css.viewDesc}>{typeof root === "string" && root !== "" ? t("panel.desc", {root}) : t("panel.descNoRoot")}</div>
             {state.error === null ? null : (
                 // 失败的添加/移除过去在这里静默死掉（「添加按钮没反应」）；
                 // 现在把 remote 错误显示出来。
-                <div data-workspace-only-viewDesc role="alert">{state.error}</div>
+                <div className={css.viewDesc} role="alert">{state.error}</div>
             )}
-            <div data-workspace-only-fieldRow>
+            <div className={entryRowCss.fieldRow}>
                 <Input
-                    className="workspaceOnlyGrow"
+                    className={entryRowCss.grow}
                     value={draft}
                     placeholder={t("panel.placeholder")}
                     disabled={busy}
@@ -62,15 +64,15 @@ export function WorkspaceOnlyWhitelistView({useWorkspaceOnly, sessionId, addEntr
                 </Button>
             </div>
             {entries.length === 0 ? (
-                <div data-workspace-only-viewEmpty>{t("panel.empty")}</div>
+                <div className={css.viewEmpty}>{t("panel.empty")}</div>
             ) : (
-                <div data-workspace-only-list>
+                <div className={entryRowCss.list}>
                     {entries.map((entry) => (
-                        <div data-workspace-only-item key={`${entry.root}|${entry.dir}`}>
-                            <span data-workspace-only-path title={entry.dir}>{entry.dir}</span>
+                        <div className={entryRowCss.item} key={`${entry.root}|${entry.dir}`}>
+                            <span className={entryRowCss.path} title={entry.dir}>{entry.dir}</span>
                             <button
                                 type="button"
-                                data-workspace-only-mini
+                                className={entryRowCss.mini}
                                 disabled={busy}
                                 onClick={() => {
                                     removeEntry(entry);

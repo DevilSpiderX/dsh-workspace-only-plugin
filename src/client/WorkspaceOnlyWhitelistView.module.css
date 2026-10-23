@@ -1,0 +1,32 @@
+/* 「白名单目录（本会话）」视图（conversation.view 槽位）。 */
+
+.view {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 720px;
+    margin: 0 auto;
+    flex-direction: column;
+    gap: 12px;
+    padding: 24px 16px 48px;
+    display: flex;
+}
+
+.viewTitle {
+    color: var(--dsw-alias-label-primary);
+    font-size: 15px;
+    font-weight: 500;
+    line-height: 24px;
+}
+
+.viewDesc {
+    color: var(--dsw-alias-label-tertiary);
+    font-size: 12px;
+    line-height: 18px;
+}
+
+.viewEmpty {
+    color: var(--dsw-alias-label-dimmed);
+    font-size: 12px;
+    line-height: 18px;
+    padding: 8px 0;
+}
