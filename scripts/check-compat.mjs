@@ -79,7 +79,11 @@ function candidateRoots() {
         process.env.DSH_ASAR,
         join(homedir(), "AppData", "Local", "Programs", "DeepSeek Harness", "resources", "app.asar"),
         "C:\\Program Files\\DeepSeek Harness\\resources\\app.asar",
+        "D:\\Program Files\\DeepSeek Harness\\resources\\app.asar",
+        "E:\\Program Files\\DeepSeek Harness\\resources\\app.asar",
+        "C:\\Programs\\DeepSeek Harness\\resources\\app.asar",
         "D:\\Programs\\DeepSeek Harness\\resources\\app.asar",
+        "E:\\Programs\\DeepSeek Harness\\resources\\app.asar",
         "/Applications/DeepSeek Harness.app/Contents/Resources/app.asar"
     ].filter((value) => typeof value === "string" && value !== "");
     for (const asar of asars) if (existsSync(asar)) roots.push({kind: "asar", base: asar});
