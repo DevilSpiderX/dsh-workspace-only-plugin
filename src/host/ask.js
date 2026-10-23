@@ -78,9 +78,9 @@ export function choiceFromAnswer(answer) {
 /**
  * 构建绑定到本插件运行时的 ask 流程。
  *
- * @param options - `timeoutMs()` 读取 `Config.dialogTimeoutMs`；`allowAlways(dir)`
- *   把目录持久化进 `Config.always`；`allowPattern(pattern)` 把敏感 pattern 持久化
- *   进 `Config.sensitiveAlways`（任务 T4）；`isAlwaysAllowed(path)` 判断路径是否
+ * @param options - `timeoutMs()` 读取 `Config.dialogTimeoutMs`；`allowAlways(dir, session)`
+ *   把目录持久化进 `Config.always`（条目绑会话的血缘根，T20）；`allowPattern(pattern)` 把敏感 pattern 持久化
+ *   进 `Config.sensitiveAlways`（任务 T4）；`isAlwaysAllowed(path, session)` 判断路径是否
  *   已被白名单覆盖（任务 T2 的批量放行）；`isPatternAllowed(pattern)` 判断敏感
  *   pattern 是否已持久化（任务 T12 的队列跟进）；`fastDenyMs()` 读取
  *   `Config.fastDenyMs`（任务 T6：>0 时对没有应答通道的调用启用快速 fail-closed）；
@@ -141,8 +141,9 @@ export function createAskFlow({
         for (const [requestId, entry] of [...pending.entries()]) {
             if (entry.sessionId !== sessionId) continue;
             const targets = Array.isArray(entry.targets) ? entry.targets : [];
-            // 任务 T9：root 随待决项一起携带，使工作区级条目只在自己的会话 root 下匹配。
-            if (!targets.some((target) => isAlwaysAllowed(target, entry.root) === true)) continue;
+            // 任务 T20：会话对象随待决项一起携带，会话级条目只在自己的主会话
+            //（血缘根）下匹配。
+            if (!targets.some((target) => isAlwaysAllowed(target, entry.session) === true)) continue;
             drop(requestId);
             entry.releaseVia = CHANNEL.alwaysBatch;
             entry.resolve(CHOICE.always);
@@ -206,7 +207,6 @@ export function createAskFlow({
         const kinds = Array.isArray(grantKinds) && grantKinds.length > 0 ? grantKinds : ["dir"];
         const sensitivePatterns = Array.isArray(patterns) ? [...new Set(patterns)] : [];
         const targetList = Array.isArray(targets) ? targets : [];
-        const root = session?.header?.cwd;
         // Fail closed：排队等待期间被取消的调用绝不再询问。
         if (signal?.aborted === true) {
             recordDecision(session, {
@@ -222,7 +222,7 @@ export function createAskFlow({
         // 任务 T2 的队列跟进：排队期间授予的白名单条目已经覆盖了这次调用 ——
         // 按批量放行结算，不弹卡片。两个维度绝不混用（D5）：目录条目从不放行
         // 敏感 ask，且只有已持久化的 pattern（绝不是目录）能放行敏感 ask。
-        const dirCovered = !kinds.includes("dir") || targetList.some((target) => isAlwaysAllowed?.(target, root) === true);
+        const dirCovered = !kinds.includes("dir") || targetList.some((target) => isAlwaysAllowed?.(target, session) === true);
         const patternCovered = !kinds.includes("pattern") || (sensitivePatterns.length > 0 && typeof isPatternAllowed === "function" && sensitivePatterns.every((pattern) => isPatternAllowed(pattern) === true));
         if (dirCovered && patternCovered) {
             recordDecision(session, {
@@ -246,9 +246,9 @@ export function createAskFlow({
             if (via === CHANNEL.alwaysBatch) return CHOICE.always;
             try {
                 if (kinds.includes("dir")) {
-                    // 授权会话的 root 给条目定作用域：ask 卡片的授权永远是会话级的
-                    // （在会话页的白名单视图里管理），绝不是全局的。
-                    await allowAlways(dir, session?.header?.cwd);
+                    // 授权会话的血缘根给条目定作用域（T20）：ask 卡片的授权永远是
+                    // 会话级的（在会话页的白名单视图里管理），绝不是全局的。
+                    await allowAlways(dir, session);
                     // 任务 T2：新白名单条目放行同会话中已被它覆盖的其他待决 ask。
                     releaseMatching(session?.id);
                     recordAlwaysAdded(session, {dir, toolName: exec.name, kind: "dir"});
@@ -385,7 +385,8 @@ async function askPanel(ctx, {
         reason,
         targets: Array.isArray(targets) ? targets.slice() : [],
         sessionId: session?.id,
-        root: session?.header?.cwd,
+        // T20：待决项携带会话对象（白名单匹配要走血缘根）。
+        session,
         releaseVia: void 0,
         announced: false,
         resolve: () => {

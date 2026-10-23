@@ -12,12 +12,11 @@ import {
     isPlatformTempTarget,
     isPreciselyScanned,
     lexicallyWithin,
-    sameLocation,
     scanTargets,
     sensitiveMatch,
     toolAccessKind
 } from "./scanner.js";
-import {ensureScopePersisted, SCOPE, sessionScope, setSessionScope} from "./session-state.js";
+import {ensureScopePersisted, rootSessionIdOf, SCOPE, sessionScope, setSessionScope} from "./session-state.js";
 
 /**
  * Workspace Only：一个全局开关，把每种沙箱模式（read-only / workspace-write /
@@ -64,13 +63,15 @@ export const Config = z.object({
     /** 门禁的主开关（运行时写入）。 */
     enabled: z.boolean().default(true).volatile(),
     /**
-     * 总是放行的目录（运行时写入）。两种条目形状：
-     * 纯字符串是全局条目（在设置页管理），`{ root, dir }` 是会话级的
-     * （在会话页的"白名单目录"视图里管理）—— 它只在 `root` 之下的会话里放行，
-     * `root` 是授权会话的工作区根。
+     * 总是放行的目录（运行时写入）。三种条目形状：
+     * 纯字符串是全局条目（在设置页管理），`{ session, dir }` 是会话级的
+     * （在会话页的"白名单目录"视图里管理）—— `session` 是授权会话的**血缘根**
+     *（顶层主会话）id，只在该主会话及其子代理/fork 内放行，不同主会话互相
+     * 隔离（T20）。`{ root, dir }` 是 T9 的旧项目级形状：仅为不炸配置加载而
+     * 保留接受，**匹配与展示一律软忽略**（不放行、不显示）。
      *
-     * 元素 schema 必须同时接受两种形状：只声明字符串会让 `{ root, dir }` 条目的
-     * 每次设置写回都过不了 schemastery 校验（"expected string but got [object Object]"），
+     * 元素 schema 必须同时接受所有形状：只声明字符串会让对象条目的每次设置
+     * 写回都过不了 schemastery 校验（"expected string but got [object Object]"），
      * 而它静默降级了 ask 卡片的"总是允许该目录"（授权回退成仅此一次）和白名单视图的
      * 添加按钮（写入被拒）成无操作。
      *
@@ -79,6 +80,9 @@ export const Config = z.object({
      * 并在每台机器上保持正确。
      */
     always: z.array(z.union([z.string(), z.object({
+        session: z.string(),
+        dir: z.string()
+    }).required(), z.object({
         root: z.string(),
         dir: z.string()
     }).required()])).default([]).volatile(),
@@ -236,17 +240,29 @@ function narrationFor(scope, dirs) {
 
 export function apply(ctx, config = {}) {
     const isEnabled = () => readVolatile(config.enabled) === true;
-    /** 一条白名单条目 —— 旧版/全局字符串或 `{ root, dir }` 工作区级条目（任务 T9）。 */
+    /**
+     * 一条白名单条目。三种形状：全局字符串、`{ session, dir }` 会话级条目
+     *（T20，session=主会话血缘根 id）、`{ root, dir }` 旧项目级条目（T9，
+     * 软忽略，仅保留在配置里不炸加载）。`kind` 是匹配与去重键的判别依据。
+     */
     const alwaysEntry = (entry) => {
-        if (typeof entry === "string" && entry !== "") return {root: void 0, dir: entry};
+        if (typeof entry === "string" && entry !== "") return {kind: "global", session: void 0, root: void 0, dir: entry};
         if (entry !== null && typeof entry === "object" && typeof entry.dir === "string" && entry.dir !== "") {
-            return {root: typeof entry.root === "string" && entry.root !== "" ? entry.root : void 0, dir: entry.dir};
+            if (typeof entry.session === "string" && entry.session !== "") {
+                return {kind: "session", session: entry.session, root: void 0, dir: entry.dir};
+            }
+            return {
+                kind: "legacy",
+                session: void 0,
+                root: typeof entry.root === "string" && entry.root !== "" ? entry.root : void 0,
+                dir: entry.dir
+            };
         }
         return void 0;
     };
     const alwaysKey = (entry) => {
         const parsed = alwaysEntry(entry);
-        return parsed === void 0 ? "" : `${parsed.root ?? ""}|${parsed.dir}`;
+        return parsed === void 0 ? "" : `${parsed.kind}:${parsed.session ?? parsed.root ?? ""}|${parsed.dir}`;
     };
     const alwaysList = () => {
         const value = readVolatile(config.always);
@@ -281,12 +297,14 @@ export function apply(ctx, config = {}) {
         await settings.update("workspace-only", patch);
     }
 
-    async function allowAlways(dir, root) {
+    async function allowAlways(dir, session) {
         const normalized = String(dir);
-        // ask 卡片与会话页的授权会盖上授权会话的 root（会话级条目）；
-        // 设置页的授权（无 root）保持全局。
-        const scoped = typeof root === "string" && root !== "";
-        const entry = scoped ? {root, dir: normalized} : normalized;
+        // ask 卡片与会话页的授权绑授权会话的**血缘根**（主会话 id，T20）：
+        // 主会话及其子代理共享一批条目，不同主会话互相隔离。设置页的授权
+        //（无 session）保持全局；解析不到会话时降级为全局条目（设置页可见
+        // 可删），绝不静默写成永不生效的孤儿条目。
+        const scoped = rootSessionIdOf(session, resolveParent);
+        const entry = typeof scoped === "string" && scoped !== "" ? {session: scoped, dir: normalized} : normalized;
         const key = alwaysKey(entry);
         const next = [...alwaysList().filter((item) => alwaysKey(item) !== key), entry];
         await writeConfig({always: next});
@@ -327,34 +345,39 @@ export function apply(ctx, config = {}) {
         if (recentAsks.length > RECENT_LIMIT) recentAsks.length = RECENT_LIMIT;
     }
 
-    /** 白名单命中：目标位于某条 always 目录之内（T3 两侧展开；T9 先查条目 root）。 */
-    function alwaysAllows(target, root) {
+    /** 白名单命中：目标位于某条 always 目录之内（T3 两侧展开；T20 先比条目归属会话）。 */
+    function alwaysAllows(target, session) {
         const resolved = expandHomeSpelling(target) ?? target;
         // 内置默认白名单（`<DSH_HOME>/dsh-runtimes/dsh-primary-runtime`，按机器解析）
         // 像全局条目一样放行 —— 代码解析、绝不持久化，因此没有设置会烘焙出错误路径，
         // 也没有条目会被误删。deny 规则仍然压过它（它们在门禁里更早返回），敏感文件
         // 维度也不受影响（D5：目录授权从不放行敏感 ask）。
         if (builtinAlwaysDirs().some((dir) => lexicallyWithin(resolved, dir))) return true;
+        // T20：会话级条目只在自己的主会话（血缘根）下放行；旧 `{root, dir}`
+        // 项目级条目（legacy）软忽略——不匹配；全局字符串条目处处生效。
+        // 解析不到会话身份时会话级条目一律不命中（fail-closed 收紧）。
+        const sessionKey = rootSessionIdOf(session, resolveParent);
         return alwaysList().some((raw) => {
             const entry = alwaysEntry(raw);
             if (entry === void 0) return false;
-            // 任务 T9：工作区级条目只在自己的会话 root 下放行；旧版字符串条目保持全局。
-            if (entry.root !== void 0 && !sameLocation(entry.root, root)) return false;
+            if (entry.kind === "session" && entry.session !== sessionKey) return false;
+            if (entry.kind === "legacy") return false;
             return lexicallyWithin(resolved, expandHomeSpelling(entry.dir) ?? entry.dir);
         });
     }
 
     /**
-     * 任务 T14：对某个会话 root 生效的 always 目录，供运行时上下文叙述使用 ——
-     * 内置默认值加全局条目加该 root 的工作区级条目。匹配方式与
+     * 任务 T14：对某个会话生效的 always 目录，供运行时上下文叙述使用 ——
+     * 内置默认值加全局条目加该会话（血缘根）的会话级条目。匹配方式与
      * {@link alwaysAllows} 相同，只是不做路径包含判定。
      */
-    function activeAlwaysDirs(root) {
+    function activeAlwaysDirs(session) {
         const dirs = builtinAlwaysDirs();
+        const sessionKey = rootSessionIdOf(session, resolveParent);
         for (const raw of alwaysList()) {
             const entry = alwaysEntry(raw);
-            if (entry === void 0) continue;
-            if (entry.root !== void 0 && !sameLocation(entry.root, root)) continue;
+            if (entry === void 0 || entry.kind === "legacy") continue;
+            if (entry.kind === "session" && entry.session !== sessionKey) continue;
             if (!dirs.includes(entry.dir)) dirs.push(entry.dir);
         }
         return dirs;
@@ -384,7 +407,7 @@ export function apply(ctx, config = {}) {
             const session = context.agent?.session;
             if (session === void 0 || !isEnabled()) return "";
             const scope = sessionScope(session, resolveParent);
-            return narrationFor(scope, activeAlwaysDirs(session?.header?.cwd));
+            return narrationFor(scope, activeAlwaysDirs(session));
         }
     });
 
@@ -394,8 +417,9 @@ export function apply(ctx, config = {}) {
         allowPattern,
         fastDenyMs: () => readVolatile(config.fastDenyMs),
         // 任务 T2：新白名单条目批量放行匹配的待决 ask。
-        // 任务 T9：回调也能看到待决项的会话 root，使工作区级条目只在自己的 root 下匹配。
-        isAlwaysAllowed: (path, entryRoot) => alwaysAllows(path, entryRoot),
+        // 任务 T20：回调携带待决项的会话对象，会话级条目只在自己的主会话
+        //（血缘根）下匹配。
+        isAlwaysAllowed: (path, session) => alwaysAllows(path, session),
         // 任务 T12：敏感 pattern 已持久化的排队 ask 不弹卡片直接结算
         // （pattern 维度，绝不是目录）。
         isPatternAllowed: (pattern) => stringList(config.sensitiveAlways, []).includes(pattern),
@@ -452,7 +476,7 @@ export function apply(ctx, config = {}) {
         for (const entry of entries) {
             if (isPlatformTempTarget(entry.path)) continue;
             const escaped = entry.outside === true || (recheckRealpath && escapesViaRealpath(entry.path, root));
-            if (escaped && !outsideReadsPass && !alwaysAllows(entry.path, root)) {
+            if (escaped && !outsideReadsPass && !alwaysAllows(entry.path, session)) {
                 outside.push(entry.outside === true ? entry : {
                     ...entry,
                     outside: true,
@@ -499,6 +523,9 @@ export function apply(ctx, config = {}) {
         snapshot(sessionId) {
             const sessions = liveSessions(ctx).map((session) => ({
                 id: session.id,
+                // T20：血缘根（主会话）id——客户端白名单视图按它过滤会话级条目，
+                // 子代理会话与主会话共享同一批条目。
+                rootId: rootSessionIdOf(session, resolveParent),
                 cwd: session.header?.cwd ?? "",
                 scope: sessionScope(session, resolveParent)
             }));
@@ -523,10 +550,10 @@ export function apply(ctx, config = {}) {
             return {scope: applied};
         },
         addAlways: (dir, sessionId) => {
-            // 会话级授权（ask 卡片、会话页）：盖上授权会话的 root（显式 id，否则
-            // 取第一个活跃会话）。解析不到 root 则降级为全局条目。
+            // 会话级授权（ask 卡片、会话页）：条目绑授权会话的血缘根（显式 id，
+            // 否则取第一个活跃会话）。解析不到会话则降级为全局条目。
             const session = resolveSession(ctx, sessionId) ?? liveSessions(ctx)[0];
-            return allowAlways(dir, session?.header?.cwd).then(() => ({always: alwaysList()}));
+            return allowAlways(dir, session).then(() => ({always: alwaysList()}));
         },
         // 全局授权（设置页）：纯字符串条目，处处生效。
         addGlobalAlways: (dir) => allowAlways(dir).then(() => ({always: alwaysList()})),

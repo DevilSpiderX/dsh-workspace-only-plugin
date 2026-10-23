@@ -140,6 +140,36 @@ function scopeOf(session, resolveParent, visited, depth) {
 }
 
 /**
+ * T20：会话的血缘根 id（顶层主会话）。会话级白名单条目绑在血缘根上——
+ * 主会话及其所有子代理/fork 共享一批条目，不同主会话（哪怕同一工作区根）
+ * 互相隔离。沿 `header.parentSession` 向上走链，防环（`visited`）与深度上限
+ * 与 {@link scopeOf} 同款。链断（父不可解析）、成环或解析器缺席时停在最后
+ * 解析成功的节点——退回会话自身 id 是收紧方向：宁可多问一次，也绝不把别的
+ * 会话授权当成自己的。裸会话 id（无 header）没有血缘，按自身 id 处理。
+ */
+export function rootSessionIdOf(session, resolveParent) {
+    if (session === void 0 || session === null) return void 0;
+    if (typeof session === "string") return session;
+    const visited = new Set([session.id]);
+    let current = session;
+    for (let depth = 0; depth < INHERIT_MAX_DEPTH; depth += 1) {
+        const parentId = current.header?.parentSession;
+        if (typeof parentId !== "string" || parentId === "" || visited.has(parentId)) break;
+        if (typeof resolveParent !== "function") break;
+        visited.add(parentId);
+        let parent;
+        try {
+            parent = resolveParent(parentId);
+        } catch {
+            parent = void 0;
+        }
+        if (parent === void 0 || parent === null) break;
+        current = parent;
+    }
+    return current.id;
+}
+
+/**
  * 生效的会话档位：实时值优先，重启后回放记录，然后（带 `resolveParent` 解析器的
  * 子代理子会话）取父会话的一次性快照。接受 Session 对象或裸会话 id（仅查实时值）。
  */

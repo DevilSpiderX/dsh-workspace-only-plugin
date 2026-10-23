@@ -16,10 +16,13 @@ export function WorkspaceOnlyWhitelistView({useWorkspaceOnly, sessionId, addEntr
         load();
     }, [load]);
     const busy = state.status === "loading" || state.status === "saving";
-    // root 取自管理快照（sessions[].cwd），每次 store 发布都重新读取，
-    // 首份快照到位后列表就保持正确。
-    const root = (state.sessions ?? []).find((entry) => entry.id === sessionId)?.cwd ?? "";
-    const entries = scopedEntries(state.always ?? [], root);
+    // 会话级条目按血缘根（主会话 id）过滤：子代理会话的视图与它的主会话
+    // 共享同一批条目，不同主会话互相隔离（T20）。rootId/root 取自管理快照
+    //（sessions[]），每次 store 发布都重新读取，首份快照到位后列表就保持正确。
+    const row = (state.sessions ?? []).find((entry) => entry.id === sessionId);
+    const rootId = row?.rootId ?? sessionId;
+    const root = row?.cwd ?? "";
+    const entries = scopedEntries(state.always ?? [], rootId);
     return (
         <div className={css.view}>
             <div className={css.viewTitle}>{t("panel.title")}</div>
@@ -68,7 +71,7 @@ export function WorkspaceOnlyWhitelistView({useWorkspaceOnly, sessionId, addEntr
             ) : (
                 <div className={entryRowCss.list}>
                     {entries.map((entry) => (
-                        <div className={entryRowCss.item} key={`${entry.root}|${entry.dir}`}>
+                        <div className={entryRowCss.item} key={`${entry.session}|${entry.dir}`}>
                             <span className={entryRowCss.path} title={entry.dir}>{entry.dir}</span>
                             <button
                                 type="button"

@@ -25,14 +25,18 @@ export function scopeGlyph(scope) {
     return jsx(PermissionIconReadOnlyRegular, {});
 }
 
-/** 全局白名单条目是纯字符串；会话级条目是 `{ root, dir }`。 */
+/** 全局白名单条目是纯字符串；会话级条目是 `{ session, dir }`（T20）。 */
 export function globalEntries(always) {
     return always.filter((entry) => typeof entry === "string");
 }
 
-/** 在 `root` 之下授予的会话级条目（宽松匹配；权威判定在 Host）。 */
-export function scopedEntries(always, root) {
-    const needle = typeof root === "string" ? root.replace(/[\\/]+$/, "").toLocaleLowerCase() : "";
+/**
+ * 归属主会话 `sessionKey`（血缘根）的会话级条目（宽松匹配；权威判定在 Host）。
+ * 子代理会话传其主会话的 rootId，与主会话共享同一批条目；旧 `{root, dir}`
+ * 项目级条目（T9）软忽略——不显示、不匹配。
+ */
+export function scopedEntries(always, sessionKey) {
+    const needle = typeof sessionKey === "string" && sessionKey !== "" ? sessionKey : "";
     if (needle === "") return [];
-    return always.filter((entry) => entry !== null && typeof entry === "object" && typeof entry.dir === "string" && typeof entry.root === "string" && entry.root.replace(/[\\/]+$/, "").toLocaleLowerCase() === needle);
+    return always.filter((entry) => entry !== null && typeof entry === "object" && typeof entry.dir === "string" && typeof entry.session === "string" && entry.session === needle);
 }
