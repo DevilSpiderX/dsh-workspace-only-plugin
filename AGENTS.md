@@ -8,11 +8,13 @@ DeepSeek Harness (dsh) 0.2.x 插件：在工具层把任意沙箱模式下的文
 pnpm install                      # 装 vite/react 开发依赖（pnpm-lock.yaml 入库）
 pnpm build                        # src/host + src/client → lib/（产物入库，与 src/ 同 commit）；两侧都走 build.minify:"oxc" 全量压缩（与官方 tsdown 产物同形态，不为看守保留字面形态）
 node scripts/verify-scanner.mjs   # 词法扫描用例（POSIX+Windows），直测 src/host/scanner.js，不依赖构建与本机 dsh
+node scripts/verify-remote-service.mjs   # Remote wire 三方契约看守（形参名 == REMOTE_WIRES == 客户端 args 键）；需先 pnpm build
 node scripts/check-compat.mjs     # 对本机 dsh 安装做契约自检（看守发布产物 lib/client.js）；--asar <app.asar> 或 DSH_HOME/DSH_ASAR 指定来源
 node tmp/smoke/run.mjs            # 端到端 smoke（stub dsh 包 + 真 schemastery 校验写回）；tmp/ 不入库，缺失则跳过
 ```
 
 - 改 `src/host/scanner.js` 或 shell 扫描行为 → 必跑 `verify-scanner.mjs`，新用例加进它的 `cases` 数组。
+- 改 Remote 方法签名、`REMOTE_WIRES` 或客户端 `call()` 载荷 → 必跑 `verify-remote-service.mjs`（先 `pnpm build`）；三方漂移的后果见「Remote 方法的 wire 字段名是三方契约」条。
 - 改任何 DSH 契约耦合面（审批词汇、pre-execute、插件记录、问答通道、client `require()`）→ 必跑 `check-compat.mjs`；它无 dsh 安装时 exit 1，属环境问题不是代码问题。
 - smoke 的 settings stub 对每次写回跑真 `Config(patch)` 校验（schemastery 转发自 `tmp/asar` 提取物，缺了要先提取 asar）——配置形状失配在 smoke 就报红。改会话状态 API、UI 文案或 Config 形状时同步 smoke 的断言与硬编码值：断言落后 API 曾让 smoke 整段烂掉（`setBypass`→档位三态），T9 批次的回归因此漏网。smoke 直测 `src/host/**`，但对 `lib/client.js`（构建产物）做 bundle 断言，跑它前先 `pnpm build`。bundle 断言必须**压缩形态容错**（`\s*` 量词 + 不假设标识符/引号形态）——T18 起 `lib/client.js` 是 oxc 全压缩产物（标识符 mangle、单参箭头括号被去掉 `(scope) =>`→`scope=>`、普通字符串变反引号），写死源码形态的正则会整段假红；**smoke 既有 bundle 断言待按此适配**（T18 切换时 smoke 不在工作区，未同步）。
 - **`lib/` 下的文件是编译产物，不要主动去修改**——所有改动写进 `src/`，再 `pnpm build` 重新生成。
@@ -53,6 +55,7 @@ node tmp/smoke/run.mjs            # 端到端 smoke（stub dsh 包 + 真 schemas
 - **升权跳过门禁**仅当 `sandbox_permissions` 目标模式**严格宽于**会话当前模式（官方升权弹窗必现时，避免双弹窗）；重复/畸形升权在官方侧零弹窗，必须照走三键。
 - **client `require()` 白名单**：只允许平台 module table 已有模块；T18 全压缩后 `check-compat` 探测 7 的文本提取取空集、空真通过（**不再抓越界**），约束靠 vite external 白名单自律 + 运行时加载即炸。0.2 已无 `@deepseek-ai/dsh-client-runtime`，所以自带 ~15 行 snapshot store，别改回官方 store。
 - **`remote-service.js` 刻意不 import** `@deepseek-ai/dsh-typert-protocol`，binding/descriptor 字面复刻——保持在缺该包的 composition 上可加载。
+- **Remote 方法的 wire 字段名是三方契约**（T22）：Gateway 的 source-mode 用 `Function.prototype.toString()` 从**方法形参名**提取 `args` wire 字段名（`methodParameterNames`），并要求客户端 `args` 键与之精确一致——`lib/` 全压缩产物把形参 mangle 成 `e`/`t`，曾令全部带参端点报 `args fields do not match the descriptor: unexpected "..."`（白名单增删、权限档位 `setScope`、三键 `announce`/`decide` 全数失效；smoke 直测 src 形参名完好、bundle 断言只看 `lib/client.js`，两头都没测到这个盲区）。现在 `REMOTE_WIRES`（`remote-service.js`，字符串字面量、**免疫压缩**）表驱动生成 strict `InvocationDescriptor` 并 `ctx.typert.register` 注册（Gateway `resolveDescriptor` 优先命中 `ctx.typert.local` 的 strict 定义，wire 与形参名解耦；typert 缺席/注册被拒则降级 source-mode 并告警、不阻塞加载）。三方一致（源码形参名 == `REMOTE_WIRES` == 客户端 `call()` args 键）由 `scripts/verify-remote-service.mjs` 看守——**改方法签名或客户端载荷必须同步 `REMOTE_WIRES` 并跑它**。strict 注册撤回后 `local.hasSeen()` 会永久禁用该端点的 SRC 回退（插件卸载后报 `definition-unavailable` 属预期）。
 - **不声明 `peerDependencies` 是有意的**：DSH 内部包以 prerelease（`0.2.1-rc.2`）演进，任何 semver 范围都会误报不兼容；兼容性只信 `check-compat.mjs`。
 - **`.volatile()` 配置字段**（`enabled`/`always`/`sensitiveAlways`/`deny`）与设置表单共享同一实时引用，运行时写回走设置服务——别深拷贝。**集合元素的形状必须被 Config schema 收纳**：`always` 三种条目（字符串=全局、`{session, dir}`=T20 会话级绑主会话血缘根、`{root, dir}`=T9 旧项目级仅保留接受、匹配与展示软忽略）都在 `z.union` 里；只声明过 `z.string()` 的那版会让每次对象条目写回被 schemastery 打回，症状极具误导性——卡片「总是允许该目录」静默降级为仅此一次（`grant()` 的 catch 吞掉错误）、白名单视图添加无反应，而设置页的全局添加（字符串）照常工作。新增条目形状先改 schema（`tmp/probe-always-schema.mjs` 守 round-trip）。
 - **`LABELS.*` 既是文案又是匹配键**（`src/host/ask.js`）：回退问答 `choiceFromAnswer` 按 label 反查 choice——改文案只动常量即自洽，别把匹配逻辑改成硬编码字符串；smoke 的 `questionChoice` 引 `LABELS.always`。

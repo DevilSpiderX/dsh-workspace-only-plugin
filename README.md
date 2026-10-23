@@ -176,5 +176,6 @@ node scripts/check-compat.mjs     # 对本机 dsh 安装做契约自检
 - `alwaysScope` 配置项已移除：询问卡片「总是允许该目录」现在固定写**会话级**条目（在会话页「白名单目录」管理），要全局放行请在 设置 → Workspace Only 手动添加；profile 的 `cordis.patch.yml` 若显式写过 `alwaysScope`，升级后删掉该行即可；
 - 「总是允许该目录」新写的会话级条目只对本会话及其子代理生效（绑主会话血缘根）；旧的全局字符串条目保持处处生效；T9 时代按项目共享的 `{root, dir}` 条目已被软忽略（不匹配不显示，配置里留着也无害），重新授权即写成新会话级条目；
 - 管理 RPC 有变更（若你有脚本直调 `workspaceOnly/*`）：`setBypass(sessionId, enabled)` → `setScope(sessionId, scope)`（`scope` ∈ `workspace` / `outside-read` / `outside-write`），新增 `addGlobalAlways(dir)`，`snapshot` 的 `sessions[]` 由 `bypass: boolean` 改为 `scope: string`。
+- 管理 RPC 的 `args` 字段名（`sessionId`/`scope`/`dir`/`entry`/`requestId`/`choice`）即各方法的 wire 契约，由插件注册的 strict 调用描述符固定（此前源码签名推断的方式在压缩产物上会全部报 `args fields do not match the descriptor`）；改方法签名或调用载荷后跑 `node scripts/verify-remote-service.mjs` 核对三方一致。
 
 设计与 DSH 运行时契约详见 [`docs/increment-plan.md`](docs/increment-plan.md)（含实现中发现的契约出入记录）。
