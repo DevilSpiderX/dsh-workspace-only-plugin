@@ -17,6 +17,7 @@ import {
     toolAccessKind
 } from "./scanner.js";
 import {ensureScopePersisted, rootSessionIdOf, SCOPE, sessionScope, setSessionScope} from "./session-state.js";
+import {addSessionDir, mergeSessionDirs, readAllSessionEntries, readSessionDirs, removeSessionDir} from "./session-whitelist.js";
 
 /**
  * Workspace Only：一个全局开关，把每种沙箱模式（read-only / workspace-write /
@@ -63,17 +64,19 @@ export const Config = z.object({
     /** 门禁的主开关（运行时写入）。 */
     enabled: z.boolean().default(true).volatile(),
     /**
-     * 总是放行的目录（运行时写入）。三种条目形状：
-     * 纯字符串是全局条目（在设置页管理），`{ session, dir }` 是会话级的
-     * （在会话页的"白名单目录"视图里管理）—— `session` 是授权会话的**血缘根**
-     *（顶层主会话）id，只在该主会话及其子代理/fork 内放行，不同主会话互相
-     * 隔离（T20）。`{ root, dir }` 是 T9 的旧项目级形状：仅为不炸配置加载而
-     * 保留接受，**匹配与展示一律软忽略**（不放行、不显示）。
+     * 总是放行的目录（运行时写入）。**只有全局条目**：纯字符串，处处生效
+     * （在设置页管理）。
      *
-     * 元素 schema 必须同时接受所有形状：只声明字符串会让对象条目的每次设置
-     * 写回都过不了 schemastery 校验（"expected string but got [object Object]"），
-     * 而它静默降级了 ask 卡片的"总是允许该目录"（授权回退成仅此一次）和白名单视图的
-     * 添加按钮（写入被拒）成无操作。
+     * 会话级条目（`{ session, dir }`）T25 起不再存这里 —— 持久化到
+     * `<DSH_HOME>/dsh-workspace-only-plugin/sessions/<血缘根id>/whitelist.json`
+     * （见 `session-whitelist.js`）。元素 schema 仍接受 `{ session, dir }`
+     * 形状：一是旧配置与迁移失败的残留仍能加载（匹配照旧生效、启动时自动
+     * 重试迁移），二是**只声明字符串会让对象条目的每次设置写回都过不了
+     * schemastery 校验**（"expected string but got [object Object]"）——
+     * 该坑曾静默降级 ask 卡片的"总是允许该目录"（回退成仅此一次）与白名单
+     * 视图的添加按钮（写入被拒）。`{ root, dir }` 是 T9 的旧项目级形状：
+     * 同样仅为不炸配置加载而保留接受，**匹配与展示一律软忽略**
+     * （不放行、不显示）。
      *
      * 内置默认值（`<DSH_HOME>/dsh-runtimes/dsh-primary-runtime`）刻意不是这里的条目：
      * 它在门禁时从实时环境解析（见 `builtinAlwaysDirs`），因此能扛过配置替换，
@@ -313,13 +316,18 @@ export function apply(ctx, config = {}) {
     async function allowAlways(dir, session) {
         const normalized = String(dir);
         // ask 卡片与会话页的授权绑授权会话的**血缘根**（主会话 id，T20）：
-        // 主会话及其子代理共享一批条目，不同主会话互相隔离。设置页的授权
-        //（无 session）保持全局；解析不到会话时降级为全局条目（设置页可见
-        // 可删），绝不静默写成永不生效的孤儿条目。
+        // 主会话及其子代理共享一批条目，不同主会话互相隔离。T25 起这类条目
+        // 持久化到会话白名单文件（`sessions/<血缘根id>/whitelist.json`），
+        // 不再写进 Config.always。设置页的授权（无 session）保持全局条目；
+        // 解析不到会话时同样降级为全局条目（设置页可见可删），绝不静默写成
+        // 永不生效的孤儿条目。
         const scoped = rootSessionIdOf(session, resolveParent);
-        const entry = typeof scoped === "string" && scoped !== "" ? {session: scoped, dir: normalized} : normalized;
-        const key = alwaysKey(entry);
-        const next = [...alwaysList().filter((item) => alwaysKey(item) !== key), entry];
+        if (typeof scoped === "string" && scoped !== "") {
+            await addSessionDir(scoped, normalized);
+            return;
+        }
+        const key = alwaysKey(normalized);
+        const next = [...alwaysList().filter((item) => alwaysKey(item) !== key), normalized];
         await writeConfig({always: next});
     }
 
@@ -345,6 +353,18 @@ export function apply(ctx, config = {}) {
     }
 
     async function removeAlways(entry) {
+        // 会话级条目（`{session, dir}`）删白名单文件；顺手清掉同 key 的
+        // 迁移残留（Config 里可能还留着迁移失败的旧条目）。其余形状
+        //（全局字符串、legacy `{root, dir}`）删 Config。
+        const parsed = alwaysEntry(entry);
+        if (parsed !== void 0 && parsed.kind === "session" && typeof parsed.session === "string" && parsed.session !== "") {
+            await removeSessionDir(parsed.session, parsed.dir);
+            const key = alwaysKey(entry);
+            const current = alwaysList();
+            const next = current.filter((item) => alwaysKey(item) !== key);
+            if (next.length !== current.length) await writeConfig({always: next});
+            return;
+        }
         const key = alwaysKey(entry);
         const next = alwaysList().filter((item) => alwaysKey(item) !== key);
         await writeConfig({always: next});
@@ -370,19 +390,26 @@ export function apply(ctx, config = {}) {
         // 项目级条目（legacy）软忽略——不匹配；全局字符串条目处处生效。
         // 解析不到会话身份时会话级条目一律不命中（fail-closed 收紧）。
         const sessionKey = rootSessionIdOf(session, resolveParent);
-        return alwaysList().some((raw) => {
+        // Config 里的 `{session, dir}` 只剩迁移失败的残留（T25），照旧匹配，
+        // 因此迁移完成前授权不会闪断。
+        const configHit = alwaysList().some((raw) => {
             const entry = alwaysEntry(raw);
             if (entry === void 0) return false;
             if (entry.kind === "session" && entry.session !== sessionKey) return false;
             if (entry.kind === "legacy") return false;
             return lexicallyWithin(resolved, expandHomeSpelling(entry.dir) ?? entry.dir);
         });
+        if (configHit) return true;
+        // T25：会话级条目的正源是白名单文件（每次判定实时读）。
+        if (typeof sessionKey !== "string" || sessionKey === "") return false;
+        return readSessionDirs(sessionKey).some((dir) => lexicallyWithin(resolved, expandHomeSpelling(dir) ?? dir));
     }
 
     /**
      * 任务 T14：对某个会话生效的 always 目录，供运行时上下文叙述使用 ——
-     * 内置默认值加全局条目加该会话（血缘根）的会话级条目。匹配方式与
-     * {@link alwaysAllows} 相同，只是不做路径包含判定。
+     * 内置默认值加全局条目加该会话（血缘根）的会话级条目（白名单文件 +
+     * Config 残留）。匹配方式与 {@link alwaysAllows} 相同，只是不做路径
+     * 包含判定。
      */
     function activeAlwaysDirs(session) {
         const dirs = builtinAlwaysDirs();
@@ -393,7 +420,65 @@ export function apply(ctx, config = {}) {
             if (entry.kind === "session" && entry.session !== sessionKey) continue;
             if (!dirs.includes(entry.dir)) dirs.push(entry.dir);
         }
+        if (typeof sessionKey === "string" && sessionKey !== "") {
+            for (const dir of readSessionDirs(sessionKey)) {
+                if (!dirs.includes(dir)) dirs.push(dir);
+            }
+        }
         return dirs;
+    }
+
+    /**
+     * 管理快照的全量白名单：Config 条目（全局字符串、迁移残留、legacy）
+     * 加全部会话白名单文件条目，按 {@link alwaysKey} 去重（同 key 保留一份，
+     * 形状都是 `{session, dir}`，客户端展示无感知）。
+     */
+    function mergedAlwaysList() {
+        const seen = new Set();
+        const merged = [];
+        for (const entry of [...alwaysList(), ...readAllSessionEntries()]) {
+            const key = alwaysKey(entry);
+            if (key === "" || seen.has(key)) continue;
+            seen.add(key);
+            merged.push(entry);
+        }
+        return merged;
+    }
+
+    /**
+     * T25 一次性迁移：把 Config 里残留的 `{ session, dir }` 会话级条目搬进
+     * 会话白名单文件，并从 Config 移除。按血缘根 id 分组、逐组提交：某组写
+     * 文件失败只影响该组（条目留在 Config 里继续生效，下次启动自动重试），
+     * 绝不丢授权。启动时 fire-and-forget；迁移完成前的读取路径合并两边
+     * （按 key 去重），因此竞态窗口内条目也不会闪断或重复展示。
+     */
+    async function migrateSessionWhitelist() {
+        const groups = new Map();
+        for (const item of alwaysList()) {
+            const entry = alwaysEntry(item);
+            if (entry === void 0 || entry.kind !== "session" || typeof entry.session !== "string" || entry.session === "") continue;
+            const dirs = groups.get(entry.session) ?? [];
+            if (!dirs.includes(entry.dir)) dirs.push(entry.dir);
+            groups.set(entry.session, dirs);
+        }
+        for (const [rootId, dirs] of groups) {
+            try {
+                await mergeSessionDirs(rootId, dirs);
+            } catch (error) {
+                console.warn(`[workspace-only] session whitelist migration failed for ${rootId}; keeping ${dirs.length} entr${dirs.length === 1 ? "y" : "ies"} in Config`, error);
+                continue;
+            }
+            // 文件已落盘才清 Config（读改写当前值，避免误删迁移期间的并发改动）。
+            try {
+                const keys = new Set(dirs.map((dir) => alwaysKey({session: rootId, dir})));
+                const current = alwaysList();
+                const next = current.filter((item) => !keys.has(alwaysKey(item)));
+                if (next.length !== current.length) await writeConfig({always: next});
+            } catch (error) {
+                // 清理失败无害：读取路径按 key 去重，下次启动再清。
+                console.warn(`[workspace-only] session whitelist migration cleanup failed for ${rootId}; duplicates stay de-duplicated at read time`, error);
+            }
+        }
     }
 
     // 可选启用的 `workspace-write` 预设显示名改写。
@@ -544,7 +629,8 @@ export function apply(ctx, config = {}) {
             }));
             return {
                 enabled: isEnabled(),
-                always: alwaysList(),
+                // T25：Config 条目 + 全部会话白名单文件条目（按 key 去重）。
+                always: mergedAlwaysList(),
                 // 为这台机器解析好的内置默认白名单（仅供显示：设置行以只读展示；
                 // 授权与移除只动 `always`）。
                 builtinAlways: builtinAlwaysDirs(),
@@ -564,13 +650,14 @@ export function apply(ctx, config = {}) {
         },
         addAlways: (dir, sessionId) => {
             // 会话级授权（ask 卡片、会话页）：条目绑授权会话的血缘根（显式 id，
-            // 否则取第一个活跃会话）。解析不到会话则降级为全局条目。
+            // 否则取第一个活跃会话），写进会话白名单文件（T25）。解析不到会话
+            // 则降级为全局条目（写 Config）。
             const session = resolveSession(ctx, sessionId) ?? liveSessions(ctx)[0];
-            return allowAlways(dir, session).then(() => ({always: alwaysList()}));
+            return allowAlways(dir, session).then(() => ({always: mergedAlwaysList()}));
         },
-        // 全局授权（设置页）：纯字符串条目，处处生效。
-        addGlobalAlways: (dir) => allowAlways(dir).then(() => ({always: alwaysList()})),
-        removeAlways: (entry) => removeAlways(entry).then(() => ({always: alwaysList()})),
+        // 全局授权（设置页）：纯字符串条目，写 Config，处处生效。
+        addGlobalAlways: (dir) => allowAlways(dir).then(() => ({always: mergedAlwaysList()})),
+        removeAlways: (entry) => removeAlways(entry).then(() => ({always: mergedAlwaysList()})),
         addDeny: (entry) => addDeny(entry).then(() => ({deny: denyList()})),
         removeDeny: (entry) => removeDeny(entry).then(() => ({deny: denyList()})),
         clearRecent() {
@@ -581,6 +668,12 @@ export function apply(ctx, config = {}) {
         announce: (requestId) => askFlow.announce(requestId),
         decide: (requestId, choice) => askFlow.decide(requestId, choice),
         pendingList: () => askFlow.pendingList()
+    });
+
+    // T25：启动时把 Config 残留的会话级条目迁往会话白名单文件
+    //（fire-and-forget；失败下次启动重试，读取路径在迁移完成前合并两边）。
+    void migrateSessionWhitelist().catch((error) => {
+        console.warn("[workspace-only] session whitelist migration failed", error);
     });
 }
 

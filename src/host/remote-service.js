@@ -87,17 +87,17 @@ const WorkspaceOnlyRemoteService = class extends Service {
         return this.hooks.setScope(sessionId, scope);
     }
 
-    /** 持久化一条会话级白名单条目（盖上授权会话的 root）。 */
+    /** 持久化一条会话级白名单条目（盖上授权会话的 root；T25 起写会话白名单文件）。 */
     async addAlways(dir, sessionId) {
         return this.hooks.addAlways(dir, sessionId);
     }
 
-    /** 持久化一条全局白名单条目（纯字符串；在设置页管理）。 */
+    /** 持久化一条全局白名单条目（纯字符串；在设置页管理，写 Config）。 */
     async addGlobalAlways(dir) {
         return this.hooks.addGlobalAlways(dir);
     }
 
-    /** 移除一条白名单条目（字符串或 `{ root, dir }`，任务 T9）。 */
+    /** 移除一条白名单条目（字符串 = Config；`{ session, dir }` = 会话白名单文件，T25）。 */
     async removeAlways(entry) {
         return this.hooks.removeAlways(entry);
     }

@@ -7,7 +7,7 @@ DeepSeek Harness (dsh) 插件：把**任何沙箱模式**（read-only / workspac
 - **全局开关**（`Config.enabled`）：开启后，越出工作区的 `read`/`write`/`edit`/`read_image`/`glob`/`grep`/`bash`/`pwsh` 调用都会停下来问用户；关闭则完全不干预。
 - **三键裁决**（`仅此一次 / 总是允许该目录 / 拒绝`）：
   - 越界调用触发时，输入栏被一张**三键卡片接管**——与 dsh 权限提升面板同款形态（警示条 + 工具/目标路径/原因 + 按钮行），`Enter`=仅此一次、`Esc`=拒绝；
-  - **总是允许该目录** → 目录写入**会话级**白名单条目 `{session, dir}`（session=授权会话的血缘根主会话 id，仅本会话及其子代理生效、不同主会话互相隔离；持久化到 profile 的 `cordis.patch.yml`），同目录后续直接放行；
+  - **总是允许该目录** → 目录写入**会话级**白名单条目（session=授权会话的血缘根主会话 id，仅本会话及其子代理生效、不同主会话互相隔离；持久化到 `<DSH_HOME>/dsh-workspace-only-plugin/sessions/<主会话id>/whitelist.json`，**不进** profile 的 `cordis.patch.yml`），同目录后续直接放行；
   - **拒绝 / 超时**（`Config.dialogTimeoutMs`，默认 120s）→ 拒绝该次调用；
   - **同一会话的并发询问逐张排队**（子代理并行工具调用就是同会话并发）：一次只出现一张卡片，答完这张才轮到下一张，不会出现「点了不关」（多张卡片挤占同一渲染席位）；排队中的调用若已被新写入的白名单条目覆盖，出队时直接放行（等效批量放行），不再弹卡；
   - **子代理的询问会在「N 个子智能体」下拉旁亮「待审批 N」徽章**（黄点 + 计数，悬停列出各请求的会话与目标路径，点击跳到该子代理——卡片就在它的输入栏），并在**父会话的会话行**上亮「待审批」黄点（平台 pending 投影，任何视图下都可见；结算即消退）——用户在会话列表即可发现「这个主会话有子代理在等确认」。徽章只出现在这些询问的**父会话**（无关会话不显示），应答或 `askDone` 结算后即时递减消退；
@@ -51,7 +51,7 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `enabled` | `false` | 门禁总开关（运行时可写，`.volatile()`） |
-| `always` | `[]` | 总是允许的目录白名单（运行时可写，`.volatile()`）：字符串条目=**全局**（设置页管理，处处生效）；`{session, dir}` 条目=**会话级**（会话页「白名单目录」管理，session=主会话血缘根 id，仅本会话及其子代理生效）；`{root, dir}` 条目=旧项目级（T9 遗留，**软忽略**：不匹配不显示，仅为不炸配置加载而保留接受） |
+| `always` | `[]` | 总是允许的目录白名单（运行时可写，`.volatile()`）：**只存全局条目**（字符串，设置页管理，处处生效）。**会话级条目 T25 起不存这里**——持久化到 `<DSH_HOME>/dsh-workspace-only-plugin/sessions/<主会话id>/whitelist.json`（会话页「白名单目录」管理，仅本会话及其子代理生效），启动时会把残留的 `{session, dir}` 条目自动迁往该文件；schema 仍接受 `{session, dir}` 形状（迁移失败的残留继续生效并重试迁移）。`{root, dir}` 条目=旧项目级（T9 遗留，**软忽略**：不匹配不显示，仅为不炸配置加载而保留接受） |
 | `sensitivePatterns` | `["*.env","*.env.*","*.pem","*.key","*.p12","*.pfx","id_rsa*","id_ed25519*"]` | 敏感文件 basename glob：**工作区内也弹三键** |
 | `sensitiveAllowPatterns` | `["*.env.example","*.env.sample","*.env.template","*.env.defaults"]` | 敏感豁免（优先于 `sensitivePatterns`，如 `.env.example` 不弹） |
 | `sensitiveAlways` | `[]` | "总是允许此类文件"持久化的 pattern（运行时可写，`.volatile()`；与目录白名单**正交**，"总是允许该目录"不会放行敏感文件） |
@@ -71,11 +71,26 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
     enabled: true
     always:
       - C:\data\shared\          # 全局条目（字符串）：处处生效
-      - session: sess-123       # 会话级条目 {session, dir}：仅该主会话及其子代理生效
-        dir: C:\data\project-cache\
 ```
 
+> 会话级条目**不在** `always` 里维护：它住在 `<DSH_HOME>/dsh-workspace-only-plugin/sessions/<主会话id>/whitelist.json`（见下节）；手写进 `always` 的 `{session, dir}` 条目会在下次启动时被自动迁往该文件。
+
 注意：patch 的 override 语义是**整体替换** `config`，写 override 时带上需要的全部字段。
+
+### 会话级白名单文件（不占配置字段）
+
+会话级白名单（询问卡片「总是允许该目录」、会话页「白名单目录」写入的条目）按主会话隔离存放在：
+
+```
+<DSH_HOME>/dsh-workspace-only-plugin/sessions/<主会话id>/whitelist.json
+{ "version": 1, "dirs": ["C:\\data\\project-cache\\"] }
+```
+
+- `<主会话id>` 是授权会话的**血缘根**（T20 语义不变）：主会话及其所有子代理/fork 共享同一个文件，不同主会话互相隔离；`DSH_HOME` 与内置默认白名单同源解析（`$DSH_HOME` 非空白优先，否则 `~/.dsh`）；
+- 条目与配置彻底解耦：写/删会话级条目不再触碰 `cordis.patch.yml`，profile 的配置 override 整体替换也冲不掉它们；
+- 读取**实时**生效（每次判定读文件），手工编辑立即可见；文件缺失/损坏按**空列表**处理（fail-closed：只会多问、不会少问）；
+- 同一会话的并发写入串行化（不会互相覆盖）；文件写失败时该次授权回退「仅此一次」并在日志告警；
+- **升级迁移**：启动时发现 Config `always` 里残留的 `{session, dir}` 条目会自动搬进对应文件并在成功后从 Config 移除（按会话分组提交，某组失败只留该组、下次启动重试，期间条目照常生效）。
 
 ### 内置默认白名单（不占配置字段）
 
@@ -119,7 +134,7 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
 
 - **deny 规则**优先级最高：命中直接拒绝、不弹窗，压过白名单、会话档位、总开关与平台临时区豁免（设置页可管理）；
 - **会话档位**（composer 旁选择框）决定越界读写要不要问：**仅工作区内**=越界读写都问；**工作区外只读**=越界读放行、越界写问（shell 保守按写）；**完全放开**=越界读写都放行。档位与白名单是**叠加放行**（任一放行即免弹），但压不过 deny 规则，且只影响越界维度；**子代理会话启动时继承父会话档位快照**，之后各自独立；
-- **白名单目录**内免弹，等效工作区内：全局条目（设置页）处处生效；会话级条目（`{session, dir}`，会话页「白名单目录」）仅本会话及其子代理生效（条目绑主会话血缘根，不同主会话互相隔离）；询问卡片「总是允许本目录」写入**会话级**条目；另有**内置默认条目** `<DSH_HOME>/dsh-runtimes/dsh-primary-runtime`（每次判定实时解析，处处生效、不可删除，见「内置默认白名单」）；
+- **白名单目录**内免弹，等效工作区内：全局条目（设置页）处处生效；会话级条目（会话页「白名单目录」）仅本会话及其子代理生效（条目绑主会话血缘根，不同主会话互相隔离；存 `sessions/<主会话id>/whitelist.json` 文件，见「会话级白名单文件」）；询问卡片「总是允许本目录」写入**会话级**条目；另有**内置默认条目** `<DSH_HOME>/dsh-runtimes/dsh-primary-runtime`（每次判定实时解析，处处生效、不可删除，见「内置默认白名单」）；
 - **敏感文件**（`sensitivePatterns` 命中的 basename）**工作区内也弹三键，且不受会话档位影响**（「完全放开」档也弹）：一次调用既越界又敏感只弹一次（原因合并）；"总是允许此类文件"按 **pattern** 持久化（`sensitiveAlways`），与目录白名单正交——"总是允许该目录"不会放行敏感文件；
 - **平台临时区**默认免弹：`%TEMP%`/`os.tmpdir()` 下 `dsh-*` 或 `.dsh-*` 一级子目录（含子树）是 DSH 自己生成的落盘目录——`dsh-subprocess-*`（子进程大输出 spill）、`dsh-spill-*`（工具结果溢出）、`dsh-*`（沙箱受限进程的私有 TEMP）等，工具跟随 `spillPath` 或展开 `%TEMP%` 时不再询问；临时根本身、其下普通文件、其他位置的同名前缀目录照旧弹；
 - 带 `sandbox_permissions` 的升权调用**仅当目标模式严格宽于会话当前模式**（官方升权弹窗必现）时才跳过门禁（避免双弹窗）；重复（等于当前模式）或畸形的升权请求在官方侧**零弹窗**直接放行/报错，一律照走三键门禁，堵死"重复升权绕过"；
@@ -142,7 +157,7 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
 文案按会话档位裁剪，内容包括：
 
 - **工具口径**（与 `toolAccessKind` 一致）：`read`/`read_image`/`glob`/`grep` 算读；`write`/`edit` 算写；**命令行工具 `bash`/`pwsh` 一律按写计**（命令文本无法静态分辨读写，命令内任何越界路径都弹审批，即使命令只是读）；其他/未知工具保守按写。仅「工作区外只读」档展开此表（该档的口径边界最容易被误解）。
-- **目录白名单列表**：注入当前会话**实际生效**的 always-allowed 目录（全局条目 + 归属本会话（血缘根）的会话级条目 + 内置默认 `dsh-primary-runtime`），标注"这些目录命中即放行、无提示"；超过 20 条截断显示。白名单变更后下一次上下文组装即生效（文案是活的回调，不是一次性快照）。
+- **目录白名单列表**：注入当前会话**实际生效**的 always-allowed 目录（全局条目 + 归属本会话（血缘根）的会话级条目（白名单文件） + 内置默认 `dsh-primary-runtime`），标注"这些目录命中即放行、无提示"；超过 20 条截断显示。白名单变更后下一次上下文组装即生效（文案是活的回调，不是一次性快照）。
 - **不变规则尾注**：三键语义（仅此一次/总是允许该目录/拒绝）、超时与无人应答=拒绝（fail-closed）、敏感文件任何档位都弹、deny 规则最高优先、不要用 `sandbox_permissions` 逃逸（仅严格升权跳过门禁）、卡片弹出后等待用户决策且拒绝后不要原样重试。
 
 「完全放开」档只声明放行范围与残留约束（敏感仍弹、deny 仍拦），不列白名单（全部放行无意义）。
@@ -168,13 +183,14 @@ node scripts/verify-scanner.mjs   # 词法扫描用例（POSIX + Windows，含�
 node scripts/check-compat.mjs     # 对本机 dsh 安装做契约自检
 ```
 
-实现结构：源码在 `src/`、构建产物在 `lib/`（`pnpm build` 生成，随 git 分发）。`src/host/scanner.js`（纯词法扫描 + 读写口径 `toolAccessKind`，可独立测试）、`src/host/ask.js`（三键会合点与回退链）、`src/host/approval-compat.js`（官方审批瀑布封装）、`src/host/session-state.js`（会话档位三态与审计记录）、`src/host/remote-service.js`（client→host 管理 RPC）、`src/host/index.js`（门禁装配）、`src/client/**`（React JSX 源码：设置页、composer 会话档位选择框、会话页「白名单目录」视图、会话标题栏待审批徽章与父会话行黄点，UI 组件用 `@deepseek-ai/dsh-client-ui-primitives` 的 `Menu`/`Input`/`Button`，与官方权限选择器同款）→ 构建为单文件 `lib/client.js`。
+实现结构：源码在 `src/`、构建产物在 `lib/`（`pnpm build` 生成，随 git 分发）。`src/host/scanner.js`（纯词法扫描 + 读写口径 `toolAccessKind` + DSH_HOME 解析，可独立测试）、`src/host/ask.js`（三键会合点与回退链）、`src/host/approval-compat.js`（官方审批瀑布封装）、`src/host/session-state.js`（会话档位三态与审计记录）、`src/host/session-whitelist.js`（会话级白名单的文件持久化与迁移）、`src/host/remote-service.js`（client→host 管理 RPC）、`src/host/index.js`（门禁装配）、`src/client/**`（React JSX 源码：设置页、composer 会话档位选择框、会话页「白名单目录」视图、会话标题栏待审批徽章与父会话行黄点，UI 组件用 `@deepseek-ai/dsh-client-ui-primitives` 的 `Menu`/`Input`/`Button`，与官方权限选择器同款）→ 构建为单文件 `lib/client.js`。
 
 ## 升级说明（会话级放飞 → 会话档位）
 
 - 旧版的会话级「放飞」开关升级为三档档位：放飞中的旧会话读旧记录自动映射为**完全放开**，未放飞的映射为**仅工作区内**；
 - `alwaysScope` 配置项已移除：询问卡片「总是允许该目录」现在固定写**会话级**条目（在会话页「白名单目录」管理），要全局放行请在 设置 → Workspace Only 手动添加；profile 的 `cordis.patch.yml` 若显式写过 `alwaysScope`，升级后删掉该行即可；
 - 「总是允许该目录」新写的会话级条目只对本会话及其子代理生效（绑主会话血缘根）；旧的全局字符串条目保持处处生效；T9 时代按项目共享的 `{root, dir}` 条目已被软忽略（不匹配不显示，配置里留着也无害），重新授权即写成新会话级条目；
+- **T25：会话级条目搬家**——不再存 profile 的 `cordis.patch.yml`（`always` 只留全局字符串条目），改存 `<DSH_HOME>/dsh-workspace-only-plugin/sessions/<主会话id>/whitelist.json`。升级后首次启动自动把 `always` 里残留的 `{session, dir}` 条目迁往对应文件（迁移失败的组留在 Config 里继续生效并自动重试）；管理 RPC 形状不变（`snapshot.always` 仍返回 `{session, dir}` / 字符串条目）。
 - 管理 RPC 有变更（若你有脚本直调 `workspaceOnly/*`）：`setBypass(sessionId, enabled)` → `setScope(sessionId, scope)`（`scope` ∈ `workspace` / `outside-read` / `outside-write`），新增 `addGlobalAlways(dir)`，`snapshot` 的 `sessions[]` 由 `bypass: boolean` 改为 `scope: string`。
 - 管理 RPC 的 `args` 字段名（`sessionId`/`scope`/`dir`/`entry`/`requestId`/`choice`）即各方法的 wire 契约，由插件注册的 strict 调用描述符固定（此前源码签名推断的方式在压缩产物上会全部报 `args fields do not match the descriptor`）；改方法签名或调用载荷后跑 `node scripts/verify-remote-service.mjs` 核对三方一致。
 

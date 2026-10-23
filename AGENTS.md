@@ -34,13 +34,14 @@ node tmp/smoke/run.mjs            # 端到端 smoke（stub dsh 包 + 真 schemas
 | 路径 | 角色 |
 |---|---|
 | `src/host/index.js` | cordis 插件入口（`export name/inject/Config/apply`）；门禁装配、Config 定义 |
-| `src/host/scanner.js` | 纯词法路径扫描 + 读写口径（`toolAccessKind`），无依赖，可独立测 |
+| `src/host/scanner.js` | 纯词法路径扫描 + 读写口径（`toolAccessKind`）+ `resolveDshHome`/`builtinAlwaysDirs`，无依赖，可独立测 |
 | `src/host/ask.js` | 三键会合点、presence 握手、回退链 |
 | `src/host/approval-compat.js` | 官方 `approval/request` 瀑布封装（回退通道） |
 | `src/host/session-state.js` | 会话档位三态与审计记录 |
+| `src/host/session-whitelist.js` | 会话级白名单的文件持久化（`sessions/<rootId>/whitelist.json`）与写串行 |
 | `src/host/remote-service.js` | client→host 管理 RPC（`workspaceOnly/*`） |
 | `src/client/**` | Web 端 UI 源码（JSX；`index.jsx` 装配 `apply`/`inject`，见下） |
-| `lib/` | **构建产物**（`pnpm build` 生成，入库 git、与 `src/` 同 commit）：host 6 文件 + `client.js` bundle |
+| `lib/` | **构建产物**（`pnpm build` 生成，入库 git、与 `src/` 同 commit）：host 7 文件 + `client.js` bundle |
 | `scripts/` | 自检脚本（随 npm 包发布，`package.json.files` 已包含） |
 | `docs/` | 任务书与迁移记录，**已入库** |
 | `tmp/` | gitignored 工作区：smoke、探针、`commit-msg.txt` |
@@ -59,6 +60,7 @@ node tmp/smoke/run.mjs            # 端到端 smoke（stub dsh 包 + 真 schemas
 - **Remote 方法的 wire 字段名是三方契约**（T22）：Gateway 的 source-mode 用 `Function.prototype.toString()` 从**方法形参名**提取 `args` wire 字段名（`methodParameterNames`），并要求客户端 `args` 键与之精确一致——`lib/` 全压缩产物把形参 mangle 成 `e`/`t`，曾令全部带参端点报 `args fields do not match the descriptor: unexpected "..."`（白名单增删、权限档位 `setScope`、三键 `announce`/`decide` 全数失效；smoke 直测 src 形参名完好、bundle 断言只看 `lib/client.js`，两头都没测到这个盲区）。现在 `REMOTE_WIRES`（`remote-service.js`，字符串字面量、**免疫压缩**）表驱动生成 strict `InvocationDescriptor` 并 `ctx.typert.register` 注册（Gateway `resolveDescriptor` 优先命中 `ctx.typert.local` 的 strict 定义，wire 与形参名解耦；typert 缺席/注册被拒则降级 source-mode 并告警、不阻塞加载）。三方一致（源码形参名 == `REMOTE_WIRES` == 客户端 `call()` args 键）由 `scripts/verify-remote-service.mjs` 看守——**改方法签名或客户端载荷必须同步 `REMOTE_WIRES` 并跑它**。strict 注册撤回后 `local.hasSeen()` 会永久禁用该端点的 SRC 回退（插件卸载后报 `definition-unavailable` 属预期）。
 - **不声明 `peerDependencies` 是有意的**：DSH 内部包以 prerelease（`0.2.1-rc.2`）演进，任何 semver 范围都会误报不兼容；兼容性只信 `check-compat.mjs`。
 - **`.volatile()` 配置字段**（`enabled`/`always`/`sensitiveAlways`/`deny`）与设置表单共享同一实时引用，运行时写回走设置服务——别深拷贝。**集合元素的形状必须被 Config schema 收纳**：`always` 三种条目（字符串=全局、`{session, dir}`=T20 会话级绑主会话血缘根、`{root, dir}`=T9 旧项目级仅保留接受、匹配与展示软忽略）都在 `z.union` 里；只声明过 `z.string()` 的那版会让每次对象条目写回被 schemastery 打回，症状极具误导性——卡片「总是允许该目录」静默降级为仅此一次（`grant()` 的 catch 吞掉错误）、白名单视图添加无反应，而设置页的全局添加（字符串）照常工作。新增条目形状先改 schema（`tmp/probe-always-schema.mjs` 守 round-trip）。
+- **会话级白名单是文件、不是 Config**（T25，`session-whitelist.js`）：`{session, dir}` 条目持久化到 `<DSH_HOME>/dsh-workspace-only-plugin/sessions/<血缘根id>/whitelist.json`（`{version, dirs}`），**绝不写进 `Config.always`**（那里只留全局字符串条目）。`always` 的 `z.union` 仍接受 `{session, dir}` ——旧配置/迁移失败残留要能加载，启动时 `migrateSessionWhitelist` 自动搬迁（逐组提交：文件写成功才从 Config 清理，失败组留着下次重试；读取路径合并两边按 key 去重，竞态不闪断）。失败方向 fail-closed：文件缺失/损坏=空列表（多问）、非法会话 id（含路径分隔符等）=拒写回退仅此一次、写失败=grant 回退仅此一次；同会话写入按 promise 链串行。匹配/叙述/快照三处都要合并文件条目（`alwaysAllows`/`activeAlwaysDirs`/`mergedAlwaysList`）。
 - **`LABELS.*` 既是文案又是匹配键**（`src/host/ask.js`）：回退问答 `choiceFromAnswer` 按 label 反查 choice——改文案只动常量即自洽，别把匹配逻辑改成硬编码字符串；smoke 的 `questionChoice` 引 `LABELS.always`。
 - **平台 pending 投影每 session 只有一个席位**（`ui-session` 的 `publishPendingInteractions` 按 `sessionId` 取胜者）：同 session 并发多个 pending interaction 会互相遮蔽，答掉可见的那张只是让下一张补位——用户看到的正是「三键卡片点了不关」。子代理并行工具调用天然同 session 并发，所以 `ask.js` 的 `askOutside` **按 session 串行**（队列 + 出队白名单重查，承接 T2 批量放行语义）；且 Host 结算（超时/批量放行/多端作答）后必须广播 `askDone`（仍走 `settings/document-updated` 白名单事件）让各端 `closePanel` 撤卡，否则残留卡片永远留在 composer。客户端席位按 `requestId` 去重——重复 ask 负载会撞平台的 `duplicate pending interaction key`。**撤卡还要防 askDone 丢失与回退问答卡残留**（T16）：`askQuestion` 的本地超时/迟到决策后必须 `aborter.abort()`（平台按 `request.signal` 撤 question 卡；不 abort 则问答卡永远留在 composer——「超时了卡片也不消失」的根因）；客户端消费 `announce` 返回值 `{ok:false}`（Host 已结算）立即 dismiss 迟到卡，并有 `dialogTimeoutMs`+15s 自毁计时兜住 askDone 丢失——本地撤卡不发 `decide`、不改裁决（Host 超时本来就拒，fail-closed）。
 - **Windows 一等公民**：路径包含判定对 win 形态用 `path.win32` 语义（大小写不敏感）；盘符、UNC、`..\`、反斜杠转义、`%USERPROFILE%`/`$env:USERPROFILE` 都要扫到。**正则/注释碎片不是路径**（T15，`isRegexOrCommentSlash`）：`/\*`、`//`、`/*` 形态豁免（`//server/share` UNC 斜杠写法因带 share 段仍报；bare `/*` 保留 glob 语义），三处判定点（INTERIOR_PATH 前瞻、shell token 级、pattern 判定）必须同步该语义——`-Pattern '^\s*(//|/\*|\*)'` 曾被扫成 `//` 越界而误弹审批。Windows 斜杠开关（`findstr /R`）与单段绝对路径词法不可分，保留保守误报。改扫描先看 `verify-scanner.mjs` 的 false-positive 对照组。

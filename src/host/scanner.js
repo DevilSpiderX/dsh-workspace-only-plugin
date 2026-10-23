@@ -65,24 +65,37 @@ function expandTildePath(value) {
 }
 
 /**
- * 内置默认白名单（总是放行的根）：harness home 下的 DSH 运行时目录 ——
- * `<DSH_HOME>/dsh-runtimes/dsh-primary-runtime`，即 Desktop host 安装随附
- * Python/Node/pnpm 载荷的确切根（`desktop-host` 的 `root`）。home 沿用宿主的
- * `resolveDshHome()`（`@deepseek-ai/dsh-home-paths`），此处内联：设置了且非空白
- * 的 `$DSH_HOME` 优先（空白覆盖绝不能解析成当前工作目录），否则 `~/.dsh`；
- * 波浪号写法会展开，结果解析为绝对路径。每次调用都重新解析、绝不持久化：
- * harness home 因机器和用户而异，因此烘焙的默认值（或持久化的绝对路径）在任何
- * 其他机器上都是错的。返回的条目是普通写法，判定与全局 `always` 条目完全一致 ——
- * 没有会话 root，在哪里都生效（见门禁的 `alwaysAllows`）。
+ * harness home（DSH_HOME）解析：设置了且非空白的 `$DSH_HOME` 优先（空白覆盖
+ * 绝不能解析成当前工作目录），否则 `~/.dsh`；波浪号写法会展开，结果按 home
+ * 自身形态的语义解析为绝对路径。沿用宿主 `resolveDshHome()`
+ * （`@deepseek-ai/dsh-home-paths`）的语义，此处内联（本插件不依赖该包；
+ * scripts/check-compat.mjs 探测 12 会对照真实安装重新核实该形状）。每次调用
+ * 都重新解析、绝不持久化：harness home 因机器和用户而异。内置默认白名单
+ * （{@link builtinAlwaysDirs}）与会话白名单文件（`session-whitelist.js`）
+ * 共用这一个解析，避免两处漂移。
  */
-export function builtinAlwaysDirs(env = process.env) {
+export function resolveDshHome(env = process.env) {
     const fromEnv = env?.DSH_HOME;
     const selected = typeof fromEnv === "string" && fromEnv.trim() !== "" ? fromEnv : join(homedir(), ".dsh");
     const home = expandTildePath(selected);
-    // 按 home 自身形态的语义拼接，而不是按宿主的，这样 Windows 形态的 home 在任何
-    // 宿主上都产出 `\` 分隔符（反之亦然）。
+    // 按 home 自身形态的语义解析，而不是按宿主的，这样 Windows 形态的 home 在任何
+    // 宿主上都保持 `\` 分隔符（反之亦然）。
     const mod = WINDOWS_SHAPE(home) ? win32 : posix;
-    return [mod.join(mod.resolve(home), "dsh-runtimes", "dsh-primary-runtime")];
+    return mod.resolve(home);
+}
+
+/**
+ * 内置默认白名单（总是放行的根）：harness home 下的 DSH 运行时目录 ——
+ * `<DSH_HOME>/dsh-runtimes/dsh-primary-runtime`，即 Desktop host 安装随附
+ * Python/Node/pnpm 载荷的确切根（`desktop-host` 的 `root`）。每次调用都重新
+ * 解析、绝不持久化：烘焙的默认值（或持久化的绝对路径）在任何其他机器上都是
+ * 错的。返回的条目是普通写法，判定与全局 `always` 条目完全一致 ——
+ * 没有会话 root，在哪里都生效（见门禁的 `alwaysAllows`）。
+ */
+export function builtinAlwaysDirs(env = process.env) {
+    const home = resolveDshHome(env);
+    const mod = WINDOWS_SHAPE(home) ? win32 : posix;
+    return [mod.join(home, "dsh-runtimes", "dsh-primary-runtime")];
 }
 
 /** 为一对 target/root 选择路径语义：Windows 形态用 win32，其余用 POSIX。 */

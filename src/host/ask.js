@@ -247,7 +247,8 @@ export function createAskFlow({
             try {
                 if (kinds.includes("dir")) {
                     // 授权会话的血缘根给条目定作用域（T20）：ask 卡片的授权永远是
-                    // 会话级的（在会话页的白名单视图里管理），绝不是全局的。
+                    // 会话级的（在会话页的白名单视图里管理），绝不是全局的 ——
+                    // T25 起持久化到会话白名单文件，不进 Config。
                     await allowAlways(dir, session);
                     // 任务 T2：新白名单条目放行同会话中已被它覆盖的其他待决 ask。
                     releaseMatching(session?.id);
