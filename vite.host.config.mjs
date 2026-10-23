@@ -1,36 +1,6 @@
-import {defineConfig, minifySync} from "vite";
-
-/**
- * 产物剥注释：源码注释写中文仅供阅读，构建产物不携带注释。
- * 只压空白与剥注释（codegen.removeWhitespace），不动标识符/语法
- * （compress/mangle 均关闭）——host 产物是 preserveModules 的 ESM，
- * 导出名与 require 契约必须原样保留。
- * @type {{name: string, generateBundle(*, *): void}}
- */
-const stripComments = {
-    name: "strip-comments",
-    generateBundle(_options, bundle) {
-        for (const output of Object.values(bundle)) {
-            if (output.type !== "chunk") continue;
-            const result = minifySync(output.fileName, output.code, {
-                module: true, // 产物是 ESM（preserveModules）。
-                compress: false, // 不动语法，对应 esbuild 的 minifySyntax: false。
-                mangle: false, // 不动标识符，对应 minifyIdentifiers: false。
-                codegen: {
-                    removeWhitespace: true, // 压空白，对应 minifyWhitespace: true。
-                    legalComments: "none"
-                }
-            });
-            if (result.errors.length > 0) {
-                throw new Error(`strip-comments failed on ${output.fileName}: ${result.errors.map((error) => error.message ?? String(error)).join("; ")}`);
-            }
-            output.code = result.code;
-        }
-    }
-};
+import {defineConfig} from "vite";
 
 export default defineConfig({
-    plugins: [stripComments],
     esbuild: {target: "esnext"}, // 零降级，零 helper 注入。
     build: {
         outDir: "lib",
@@ -39,7 +9,7 @@ export default defineConfig({
         // 处理会把 `process.env` 替换成空对象，破坏扫描器的 home 解析和
         // WORKSPACE_ONLY_PRESENCE_WAIT_MS。
         ssr: true,
-        minify: false,
+        minify: "oxc",
         target: "esnext",
         rollupOptions: {
             input: "src/host/index.js",
