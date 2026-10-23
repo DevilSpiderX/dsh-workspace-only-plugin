@@ -6,7 +6,7 @@ import {WorkspaceOnlySection} from "./WorkspaceOnlySection.jsx";
 import {WorkspaceOnlyScopeSelect} from "./WorkspaceOnlyScopeSelect.jsx";
 import {WorkspaceOnlyWhitelistView} from "./WorkspaceOnlyWhitelistView.jsx";
 import {WorkspaceOnlyAskCard} from "./WorkspaceOnlyAskCard.jsx";
-import {WorkspaceOnlyPendingBadge, WorkspaceOnlyToast} from "./pending-notice.jsx";
+import {WorkspaceOnlyPendingBadge} from "./pending-notice.jsx";
 
 const inject = ["connection", "slots", "locale", "remote", "remote.settings", "uiSession", "sessions", "uiWorkspace"];
 /** 任务 T16：在 Host 对话框超时之上再加一段宽限，作为卡片自毁兜底。 */
@@ -81,17 +81,48 @@ function apply(ctx) {
     // 二次落座——平台域对重复 key 会抛错，多余的席位卡片永远关不掉
     //（「卡片点了不关」的根因）。
     const seats = new Map();
-    // 任务 T13：提示面的两个 store。`pendingStore` 镜像在场席位、供标题栏
-    // 徽章使用；`toastStore` 是 FIFO 的一次性 toast 队列。两者都用对象包裹，
-    // 让 `update` 的浅草稿 mutator 保持安全（裸数组状态会被展开成对象、
-    // 丢掉 Array.prototype）。
+    // 任务 T13：提示面 store。`pendingStore` 镜像在场席位、供标题栏徽章使用。
+    // 用对象包裹，让 `update` 的浅草稿 mutator 保持安全（裸数组状态会被展开
+    // 成对象、丢掉 Array.prototype）。T19：toast 提示面已整体移除——它的文案
+    // 会把主会话自己的 ask 误报成「子代理请求」，且卡片就在 composer 里；
+    // 子代理 ask 改由父会话行的「待审批」黄点提示（下面的影子 pending 投影）。
     const pendingStore = createSnapshotStore({entries: []});
-    const toastStore = createSnapshotStore({queue: []});
-    let toastSeq = 0;
-    const dismissToast = (seq) => {
-        toastStore.update((state) => {
-            state.queue = state.queue.filter((item) => item.seq !== seq);
-        });
+    // T19：父会话行的「待审批」黄点。子代理的三键卡片在子代理自己的 composer
+    // 里，父视图与会话行都看不见它。这个影子 pending 投影把平台的 warning
+    // 状态点（行尾「待审批」标签）挂到父会话的会话行上。precedence 恒 -1：
+    // 平台的赢家规则是 `precedence >= previous` 后到赢，官方审批卡与本插件的
+    // 卡片（都是 0）永远压过影子——绝不遮蔽任何真实卡片；影子只在该会话没有
+    // 任何其他 pending 时才投影黄点。影子不设 `source: "workspace-only"`、
+    // 也不是官方 PendingApproval 实例，composer 渲染链无人认领它，因此不会
+    // 渲染出任何卡片。delegate 空转：影子不承载决策，插件卸载不影响 ask 裁决。
+    const shadowPublish = ctx.uiSession.registerPendingInteraction(() => -1);
+    const rowNotices = new Map();
+    const raiseRowNotice = (requestId, parentSessionId) => {
+        if (typeof parentSessionId !== "string" || parentSessionId === "") return;
+        if (rowNotices.has(requestId)) return;
+        let remove = () => {
+        };
+        try {
+            remove = shadowPublish({
+                key: `workspace-only-notice:${requestId}`,
+                kind: "approval",
+                sessionId: parentSessionId
+            }, async () => {
+            });
+        } catch {
+            return;
+        }
+        rowNotices.set(requestId, remove);
+    };
+    const dropRowNotice = (requestId) => {
+        const remove = rowNotices.get(requestId);
+        if (remove === void 0) return;
+        rowNotices.delete(requestId);
+        try {
+            remove();
+        } catch {
+            // 平台已经撤过了。
+        }
     };
     const raisePanel = (ask) => {
         if (ask === null || ask === void 0 || typeof ask.requestId !== "string") return;
@@ -118,6 +149,9 @@ function apply(ctx) {
         const cleanup = () => {
             seats.delete(ask.requestId);
             clearTimeout(selfDestruct);
+            // T19：黄点的清理同样必须在结算同步路径做——只挂 `then` 会让
+            // 全部审批后父会话行仍残留「待审批」。
+            dropRowNotice(ask.requestId);
             pendingStore.update((state) => {
                 state.entries = state.entries.filter((entry) => entry.requestId !== ask.requestId);
             });
@@ -187,21 +221,21 @@ function apply(ctx) {
         selfDestruct = setTimeout(() => {
             seats.get(ask.requestId)?.();
         }, (Number.isSafeInteger(deadline) && deadline >= 1 ? deadline : 120_000) + SELF_DESTRUCT_GRACE_MS);
-        // T13：为标题栏徽章镜像席位并排入一条提示 toast。上面的 `seats`
-        // 去重保证两者每个 requestId 只出现一次。
+        // T13：为标题栏徽章镜像席位。上面的 `seats` 去重保证每个 requestId
+        // 只出现一次。T19：toast 已移除；子代理 ask 在父会话行挂「待审批」
+        // 黄点（影子 pending 投影）——主会话自己的 ask 不需要提示，卡片就在
+        // composer 里，且平台的行黄点早已随卡片投影亮起。
         const notice = {
             requestId: ask.requestId,
             sessionId: ask.sessionId,
+            parentSessionId: typeof ask.parentSessionId === "string" && ask.parentSessionId !== "" ? ask.parentSessionId : null,
             toolName: String(ask.toolName ?? "tool"),
             dir: String(ask.dir ?? "")
         };
         pendingStore.update((state) => {
             state.entries = [...state.entries, notice];
         });
-        toastSeq += 1;
-        toastStore.update((state) => {
-            state.queue = [...state.queue, {seq: toastSeq, text: t("pending.toast", {dir: notice.dir})}];
-        });
+        raiseRowNotice(ask.requestId, notice.parentSessionId);
         // Presence：这个 handler 能跑起来本身就证明 Web 客户端在场。
         // 立刻 announce，而不是等 React 挂载卡片，这样 Host 的 presence
         // 窗口绝不会输给渲染周期；卡片自己的 announce 保留为幂等的第二次
@@ -273,17 +307,6 @@ function apply(ctx) {
             }
         })
     }, WorkspaceOnlyPendingBadge));
-    // T13：一次性提示 toast。`shell.overlay` 是官方明示的全局浮层
-    // add-only 槽位（slot-catalog：在此注册你自己的全局横幅）；横幅
-    // 本体是共享的 Toast 原语。
-    ctx.slots.inject("shell.overlay", () => ctx.slots.register({
-        name: "shell.overlay",
-        id: "workspace-only-toast",
-        inject: () => ({
-            hooks: {toasts: toastStore},
-            dismissToast
-        })
-    }, WorkspaceOnlyToast));
     ctx.effect(() => {
         const refresh = () => {
             controller.load();

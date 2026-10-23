@@ -1,12 +1,13 @@
-import {Toast} from "@deepseek-ai/dsh-client-ui-primitives";
 import css from "./pending-notice.module.css";
 
 /**
  * T13：pending ask 的提示面。会话标题栏徽章统计当前视图无法展示的
  * 已落座 ask——子代理的三键卡片在那个子代理自己的 composer 里——
- * 点击打开第一个，卡片本体正在那边等待。toast 队列每个 ask 一条
- *（`seats` 的 requestId 去重已经保证只出现一次）。两者都只读插件
- * 自己的 ask 生命周期：官方 approval 与 question 交互刻意不在范围内。
+ * 点击打开第一个，卡片本体正在那边等待（`seats` 的 requestId 去重
+ * 保证每个 ask 只出现一次）。T19：toast 提示面已移除，子代理 ask 改由
+ * 父会话行的「待审批」黄点提示（index.jsx 的影子 pending 投影）。
+ * 两者都只读插件自己的 ask 生命周期：官方 approval 与 question 交互
+ * 刻意不在范围内。
  */
 export function WorkspaceOnlyPendingBadge({sessionId, useSessions, usePending, openPending, t}) {
     const entries = usePending((snapshot) => snapshot.entries);
@@ -46,23 +47,5 @@ export function WorkspaceOnlyPendingBadge({sessionId, useSessions, usePending, o
             <span className={css.pendingDot}/>
             {t("pending.badge", {n: visible.length})}
         </button>
-    );
-}
-
-/** 同时只出一条横幅（FIFO）；队列条目经 onDone 退出。 */
-export function WorkspaceOnlyToast({useToasts, dismissToast}) {
-    const queue = useToasts((snapshot) => snapshot.queue);
-    const head = queue[0];
-    if (head === void 0) return null;
-    return (
-        // 按展示序号作 key：复用实例会残留第一条横幅的计时器，
-        // 下一条永远退不掉。
-        <Toast
-            key={head.seq}
-            text={head.text}
-            onDone={() => {
-                dismissToast(head.seq);
-            }}
-        />
     );
 }

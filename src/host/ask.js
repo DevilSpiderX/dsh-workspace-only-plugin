@@ -419,6 +419,10 @@ async function askPanel(ctx, {
                 dir,
                 // 会话标识：composer 的 pending-interaction 投影按会话组织，没有会话标识的条目会被丢弃。
                 sessionId: session?.id,
+                // T19：子代理会话标识（header `parentSession`）。客户端据此在父会话
+                // 的会话行挂「待审批」黄点（影子 pending 投影）；主会话自己的 ask
+                // 没有父会话（null），不挂影子。
+                parentSessionId: session?.header?.parentSession ?? null,
                 // 任务 T4：命中敏感文件时，卡片把 always 按钮文案换成 pattern 维度的措辞。
                 ...sensitive === true ? {sensitive: true} : {}
             }

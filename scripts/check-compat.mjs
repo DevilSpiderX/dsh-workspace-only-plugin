@@ -246,27 +246,25 @@ function main() {
     }
 
     // 13. T13 通知挂载面契约：徽章所在的会话标题 actions 槽位（紧跟子代理目录
-    //     下拉之后）、toast 所在的 shell.overlay 浮层面，以及徽章点击跳转所用的
-    //     uiWorkspace.openSession 导航（子代理目标必须是其 SubagentAddress——
-    //     见 AGENTS.md）。
+    //     下拉之后）与徽章点击跳转所用的 uiWorkspace.openSession 导航（子代理
+    //     目标必须是其 SubagentAddress——见 AGENTS.md）。T19：toast 的
+    //     shell.overlay 浮层面随 toast 一并移除，不再看守。
     {
         const conversation = locate("dsh-client-ui-conversation", "lib/client.js", roots);
-        const layout = locate("dsh-client-ui-layout", "lib/client.js", roots);
         const workspace = locate("dsh-client-ui-workspace", "lib/client.js", roots);
         const checks = [
             [conversation, "conversation.session.header.actions", "the header badge seat is gone — the T13 badge registration in lib/client.js must be revisited"],
-            [layout, "shell.overlay", "shell.overlay is gone — the T13 toast surface must move"],
             [workspace, "openSession", "uiWorkspace.openSession is gone — the T13 badge click-through must be revisited"]
         ];
         const gone = checks.filter(([found, needle]) => found === void 0 || !found.text.includes(needle));
         record(gone.length === 0, "notice surface contracts (T13)", gone.length === 0 ? void 0 : `T13 contract drifted: ${gone.map(([found, needle, why]) => `${found === void 0 ? "package missing" : `no ${needle}`} — ${why}`).join("; ")}`);
     }
-    // 14. Toast 原语以 shell seed 形态内联在冻结模块表中
+    // 14. 共享 UI 原语以 shell seed 形态内联在冻结模块表中
     //     （`PLATFORM_MODULES` + `seed.ts` 内联 `dsh-client-ui-primitives`；
     //     app.asar 的 node_modules 里没有独立包，包路径探测会把活模块误报为
     //     已消失）。模块表的验证方式与探测 8 相同：已发布 client bundle 必须
     //     请求该 id——没有任何已发布 bundle 请求过的模块不在表中，插件 bundle
-    //     无法解析它。
+    //     无法解析它。（T19 起 Toast 原语不再使用，但包仍被控件与图标引用。）
     {
         const owners = ["dsh-client-ui-layout", "dsh-client-ui-chat", "dsh-client-locale", "dsh-client-ui-conversation", "dsh-client-ui-workspace"];
         let seeded = false;
@@ -278,7 +276,7 @@ function main() {
                 break;
             }
         }
-        record(seeded, "toast primitive seed (T13)", seeded ? void 0 : "no shipped client bundle requests @deepseek-ai/dsh-client-ui-primitives — the shared Toast primitive is missing from the frozen module table and the T13 banner must be rebuilt");
+        record(seeded, "shared UI primitive seed", seeded ? void 0 : "no shipped client bundle requests @deepseek-ai/dsh-client-ui-primitives — the shared UI primitives are missing from the frozen module table and the plugin controls cannot resolve them");
     }
 
     for (const title of passes) console.log(`PASS  ${title}`);

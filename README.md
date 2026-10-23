@@ -10,7 +10,7 @@ DeepSeek Harness (dsh) 插件：把**任何沙箱模式**（read-only / workspac
   - **总是允许该目录** → 目录写入**会话级**白名单条目 `{root, dir}`（root=授权会话的工作区根，仅同根会话生效；持久化到 profile 的 `cordis.patch.yml`），同目录后续直接放行；
   - **拒绝 / 超时**（`Config.dialogTimeoutMs`，默认 120s）→ 拒绝该次调用；
   - **同一会话的并发询问逐张排队**（子代理并行工具调用就是同会话并发）：一次只出现一张卡片，答完这张才轮到下一张，不会出现「点了不关」（多张卡片挤占同一渲染席位）；排队中的调用若已被新写入的白名单条目覆盖，出队时直接放行（等效批量放行），不再弹卡；
-  - **子代理的询问会在「N 个子智能体」下拉旁亮「待审批 N」徽章**（黄点 + 计数，悬停列出各请求的会话与目标路径，点击跳到该子代理——卡片就在它的输入栏）；每个请求另弹一次顶部 toast。徽章只出现在这些询问的**父会话**（无关会话不显示），应答或 `askDone` 结算后即时递减消退；
+  - **子代理的询问会在「N 个子智能体」下拉旁亮「待审批 N」徽章**（黄点 + 计数，悬停列出各请求的会话与目标路径，点击跳到该子代理——卡片就在它的输入栏），并在**父会话的会话行**上亮「待审批」黄点（平台 pending 投影，任何视图下都可见；结算即消退）——用户在会话列表即可发现「这个主会话有子代理在等确认」。徽章只出现在这些询问的**父会话**（无关会话不显示），应答或 `askDone` 结算后即时递减消退；
   - 无 Web 客户端（卡片未现身）→ 回退通用问题卡片（`ctx.userQuestions`，TUI 等）→ 再回退官方 `approval/request` 弹窗（与旧版行为一致，**依然绕过 `never` 策略**，Full access 会话也弹）；完全没有应答渠道时拒绝（fail closed）。
 - **会话档位选择框**（composer 权限选择器旁，与「仅可查看/工作区内修改/完全权限」同款下拉）：三档调节**本会话**的门禁强度——**仅工作区内**（越界读写都询问）/ **工作区外只读**（越界读放行、越界写询问）/ **完全放开**（越界读写都放行）。档位记在会话日志（ignorable `plugin:` 记录）+ 进程内权威，跨重启保留、会话间独立；**子代理会话启动时继承父会话档位快照**（一次定格，之后父子各自独立）。读写口径：`read`/`read_image`/`glob`/`grep` 算读，`write`/`edit` 与 shell（`bash`/`pwsh`，无法静态分辨读写）算写。**敏感文件弹窗与「永不放行」规则在任何档位都生效**。总开关关闭或未打开会话时选择框隐藏。
 - **白名单分两处管理**：
@@ -154,7 +154,7 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
 - 默认只精确扫描 8 个工具（`read`/`write`/`edit`/`read_image`/`glob`/`grep`/`bash`/`pwsh`，误报低）；MCP/插件注册的其他工具默认不设防。开启 `scanAllTools` 进入全量保守模式：任何工具的参数里出现路径形状值都会判定，配合 `scanIgnoreTools` 豁免误报工具；shell 命令内的**相对**敏感路径（如 `cat .env`）不在词法扫描范围内。
 - 在 workspace-write 会话，批准后的越界**写**仍受进程内写围栏拦截（`FS_SANDBOX_DENIED`），随后走 dsh 既有 `sandbox_permissions` 升权再确认一次——写操作始终需要明确同意；携带 `sandbox_permissions` 的调用仅在官方升权弹窗必现（目标模式严格宽于会话当前模式）时跳过本插件门禁（避免双弹窗），重复/畸形升权照走三键。
 - 三键卡片渲染依赖 Web 端（`conversation.composer` 槽位接管）；无 Web 客户端时回退通用问题卡片（TUI 等）→ 官方审批弹窗。卡片超时视为拒绝。设置 `fastDenyMs > 0` 可让无应答渠道的调用（后台/无 UI）秒级拒绝而不挂满超时（`fast-deny` 审计通道）。卡片席位按 `requestId` 去重；询问在 Host 侧结算（超时、批量放行、其他客户端作答）后广播 `askDone`，各端残留卡片自动撤下。**残留卡片的双保险**（T16）：回退问答卡在本地超时/迟到决策后一律 `abort`（平台随之撤卡，否则问答卡会永远留在 composer）；迟到挂载的卡片收到 `announce: {ok:false}`（Host 已结算）立即自清；另有本地自毁计时器（`dialogTimeoutMs` + 15 秒宽限）兜住 `askDone` 丢失的极端情形——本地撤卡不改裁决（Host 超时本来就 fail-closed 拒绝）。
-- composer 档位选择框与会话页「白名单目录」视图依赖 Web 端槽位（`conversation.input.left` / `conversation.view`，用 `@deepseek-ai/dsh-client-ui-primitives` 渲染）；TUI 等无此界面时档位保持「仅工作区内」，白名单只能从设置页或询问卡片维护。待审批徽章与 toast 提示同样依赖 Web 端槽位（`conversation.session.header.actions`，紧邻官方子代理下拉 / `shell.overlay`）。
+- composer 档位选择框与会话页「白名单目录」视图依赖 Web 端槽位（`conversation.input.left` / `conversation.view`，用 `@deepseek-ai/dsh-client-ui-primitives` 渲染）；TUI 等无此界面时档位保持「仅工作区内」，白名单只能从设置页或询问卡片维护。待审批徽章依赖 Web 端槽位（`conversation.session.header.actions`，紧邻官方子代理下拉）；子代理 ask 在父会话行的「待审批」黄点走平台 pending 投影（precedence -1 的影子交互，永不遮蔽官方审批卡与本插件卡片），不依赖额外槽位。
 - 档位的读写口径是**工具级**的：shell（`bash`/`pwsh`）命令内无法静态分辨读写，一律按写处理（「工作区外只读」下 shell 越界照弹）；`scanAllTools` 覆盖的未知工具同样保守按写。
 - 沙箱执行约束全部沿用官方（含 win32 的 ACL 受限令牌 runner 与 `dsh-fs-sandbox` 写围栏）：本插件只在工具层加门禁，不改动任何沙箱后端。
 - 会话档位的持久化尽力而为（ignorable 插件记录 + 进程内权威 + 下一次 turn 内补写）；极端丢失时门禁自动恢复为该会话的**初值**（fail-safe）：普通会话回「仅工作区内」，子代理会话按当前父会话档位重新继承——任何情况都不会自动放宽到初值之上。
@@ -168,7 +168,7 @@ node scripts/verify-scanner.mjs   # 词法扫描用例（POSIX + Windows，含�
 node scripts/check-compat.mjs     # 对本机 dsh 安装做契约自检
 ```
 
-实现结构：源码在 `src/`、构建产物在 `lib/`（`pnpm build` 生成，随 git 分发）。`src/host/scanner.js`（纯词法扫描 + 读写口径 `toolAccessKind`，可独立测试）、`src/host/ask.js`（三键会合点与回退链）、`src/host/approval-compat.js`（官方审批瀑布封装）、`src/host/session-state.js`（会话档位三态与审计记录）、`src/host/remote-service.js`（client→host 管理 RPC）、`src/host/index.js`（门禁装配）、`src/client/**`（React JSX 源码：设置页、composer 会话档位选择框、会话页「白名单目录」视图、会话标题栏待审批徽章与 toast 提示，UI 组件用 `@deepseek-ai/dsh-client-ui-primitives` 的 `Menu`/`Input`/`Button`/`Toast`，与官方权限选择器同款）→ 构建为单文件 `lib/client.js`。
+实现结构：源码在 `src/`、构建产物在 `lib/`（`pnpm build` 生成，随 git 分发）。`src/host/scanner.js`（纯词法扫描 + 读写口径 `toolAccessKind`，可独立测试）、`src/host/ask.js`（三键会合点与回退链）、`src/host/approval-compat.js`（官方审批瀑布封装）、`src/host/session-state.js`（会话档位三态与审计记录）、`src/host/remote-service.js`（client→host 管理 RPC）、`src/host/index.js`（门禁装配）、`src/client/**`（React JSX 源码：设置页、composer 会话档位选择框、会话页「白名单目录」视图、会话标题栏待审批徽章与父会话行黄点，UI 组件用 `@deepseek-ai/dsh-client-ui-primitives` 的 `Menu`/`Input`/`Button`，与官方权限选择器同款）→ 构建为单文件 `lib/client.js`。
 
 ## 升级说明（会话级放飞 → 会话档位）
 

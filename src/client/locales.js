@@ -43,8 +43,7 @@ export const zh = {
     "alwaysSensitive": "总是允许此类文件",
     "ask.deny": "拒绝",
     "pending.badge": "待审批 {n}",
-    "pending.tip": "Workspace Only：{n} 个子代理的访问请求等待确认，点击查看",
-    "pending.toast": "子代理请求访问工作区外的路径：{dir}"
+    "pending.tip": "Workspace Only：{n} 个子代理的访问请求等待确认，点击查看"
 };
 export const en = {
     "title": "Workspace Only",
@@ -91,6 +90,5 @@ export const en = {
     "alwaysSensitive": "Always allow files like this",
     "ask.deny": "Deny",
     "pending.badge": "Pending {n}",
-    "pending.tip": "Workspace Only: {n} subagent access request(s) awaiting confirmation — click to open",
-    "pending.toast": "A subagent requests access outside the workspace: {dir}"
+    "pending.tip": "Workspace Only: {n} subagent access request(s) awaiting confirmation — click to open"
 };
