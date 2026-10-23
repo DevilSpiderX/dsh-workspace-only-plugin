@@ -1,6 +1,6 @@
 {
   "name": "dsh-workspace-only-plugin",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Workspace Only switch for DeepSeek Harness: confine file access of every sandbox mode to the session workspace, with a three-choice gate, an always-whitelist, and per-session bypass",
   "type": "module",
   "main": "./lib/index.js",
