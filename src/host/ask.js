@@ -491,8 +491,8 @@ async function askQuestion(ctx, {agent, exec, reason, dir, sensitive, signal}, t
     const question = {
         id: "workspace-only",
         header: "Workspace Only",
-        question: `[Workspace Only] ${exec.name} 请求访问工作区外的路径`,
-        detail: `原因：${reason}\n目标目录：${dir}\n工具：${exec.name}`,
+        question: `[Workspace Only] \`${exec.name}\` 请求访问工作区外的路径`,
+        detail: `原因：${reason}\n目标目录：\`${dir}\`\n工具：\`${exec.name}\``,
         options: [
             {label: LABELS.once, description: "只放行这一次调用"},
             {

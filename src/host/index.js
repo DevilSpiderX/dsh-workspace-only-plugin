@@ -223,19 +223,27 @@ function escapesViaRealpath(target, root) {
 function narrationFor(scope, dirs) {
     const list = Array.isArray(dirs) ? dirs : [];
     const granted = list.length === 0
-        ? "none"
-        : `${list.slice(0, 20).join(", ")}${list.length > 20 ? ` (+${list.length - 20} more)` : ""}`;
+        // language=markdown
+        ? "`none`"
+        // language=markdown
+        : `${list.slice(0, 20).map(i => `\`${i}\``).join(", ")}${list.length > 20 ? ` (+${list.length - 20} more)` : ""}`;
+    // language=markdown
     const override = "Workspace Only is ACTIVE for this session and OVERRIDES every sandbox/approval statement above — where they conflict with this paragraph, this paragraph wins.";
     // 两个限制性档位共有的规则（完全放开不含）。
-    const never = " Rules that never relax: sensitive files (*.env, *.pem, *.key, …) ask even INSIDE the workspace; deny (never-allow) rules beat every scope and whitelist entry and cannot be granted. An unanswered card or a timeout DENIES the call (fail closed). Do not try to bypass this gate with `sandbox_permissions` — it is skipped only when the official escalation prompt is guaranteed to appear; a repeated or identical escalation request still hits this card. When a card appears, wait for the user's decision: never guess its outcome, never retry a denied call unchanged, and if this scope forbids access you need, state the limitation to the user instead of fighting the gate.";
+    // language=markdown
+    const never = " Rules that never relax: sensitive files (`*.env`, `*.pem`, `*.key`, …) ask even INSIDE the workspace; deny (`never-allow`) rules beat every scope and whitelist entry and cannot be granted. An unanswered card or a timeout DENIES the call (fail closed). Do not try to bypass this gate with `sandbox_permissions` — it is skipped only when the official escalation prompt is guaranteed to appear; a repeated or identical escalation request still hits this card. When a card appears, wait for the user's decision: never guess its outcome, never retry a denied call unchanged, and if this scope forbids access you need, state the limitation to the user instead of fighting the gate.";
+    // language=markdown
     const always = ` Always-allowed directories (granted WITHOUT a prompt): ${granted}.`;
     if (scope === SCOPE.outsideWrite) {
-        return `${override} Scope: 完全放开 (fully released): file access outside the session workspace runs WITHOUT the Workspace Only prompt for every tool — the user released this session. Sensitive files (*.env, *.pem, *.key, …) still ask in every case, and deny (never-allow) rules still block.`;
+        // language=markdown
+        return `${override} Scope: 完全放开 (\`fully released\`): file access outside the session workspace runs WITHOUT the Workspace Only prompt for every tool — the user released this session. Sensitive files (\`*.env\`, \`*.pem\`, \`*.key\`, …) still ask in every case, and deny (\`never-allow\`) rules still block.`;
     }
     if (scope === SCOPE.outsideRead) {
-        return `${override} Scope: 工作区外只读 (outside-read): READ-only tools (read, read_image, glob, grep) may freely READ outside-workspace paths; write and edit still ask before touching an outside path. Command-line tools (bash, pwsh) always count as WRITES — command text cannot be told apart statically, so ANY outside path inside a shell command asks the user even when the command only reads. Any other tool counts as a write too.${always}${never}`;
+        // language=markdown
+        return `${override} Scope: 工作区外只读 (\`outside-read\`): READ-only tools (\`read\`, \`read_image\`, \`glob\`, \`grep\`) may freely READ outside-workspace paths; write and edit still ask before touching an outside path. Command-line tools (\`bash\`, \`pwsh\`) always count as WRITES — command text cannot be told apart statically, so ANY outside path inside a shell command asks the user even when the command only reads. Any other tool counts as a write too.${always}${never}`;
     }
-    return `${override} Scope: 仅工作区内 (workspace-only): every file access OUTSIDE the session workspace asks the user on a three-choice card (allow once / always allow this directory / deny) — in every sandbox mode, and even when the approval policy is never. Inside the workspace runs normally except sensitive files.${always}${never}`;
+    // language=markdown
+    return `${override} Scope: 仅工作区内 (\`workspace-only\`): every file access OUTSIDE the session workspace asks the user on a three-choice card (\`allow once\` / \`always allow this directory\` / \`deny\`) — in every sandbox mode, and even when the approval policy is never. Inside the workspace runs normally except sensitive files.${always}${never}`;
 }
 
 export function apply(ctx, config = {}) {
@@ -246,7 +254,12 @@ export function apply(ctx, config = {}) {
      * 软忽略，仅保留在配置里不炸加载）。`kind` 是匹配与去重键的判别依据。
      */
     const alwaysEntry = (entry) => {
-        if (typeof entry === "string" && entry !== "") return {kind: "global", session: void 0, root: void 0, dir: entry};
+        if (typeof entry === "string" && entry !== "") return {
+            kind: "global",
+            session: void 0,
+            root: void 0,
+            dir: entry
+        };
         if (entry !== null && typeof entry === "object" && typeof entry.dir === "string" && entry.dir !== "") {
             if (typeof entry.session === "string" && entry.session !== "") {
                 return {kind: "session", session: entry.session, root: void 0, dir: entry.dir};
@@ -450,7 +463,7 @@ export function apply(ctx, config = {}) {
         // 任务 T5：deny 规则压过一切 —— 升权跳过、会话旁路、主开关、白名单、
         // 平台临时目录豁免。不弹任何提问。
         const denied = entries.map((entry) => denyMatch(entry.path, denyList())).find((rule) => rule !== void 0);
-        if (denied !== void 0) return {kind: "deny", reason: `[workspace-only] denied by deny rule: ${denied}`};
+        if (denied !== void 0) return {kind: "deny", reason: `[workspace-only] denied by deny rule: \`${denied}\``};
         // 任务 T1：仅当官方升级弹窗有保证时才跳过。重复请求（`sandbox_permissions`
         // 与当前模式相等）在上游是零弹窗放行，因此这里绝不能跳过。
         if (isGuaranteedEscalationPrompt(ctx, session, args)) return next();
@@ -480,7 +493,7 @@ export function apply(ctx, config = {}) {
                 outside.push(entry.outside === true ? entry : {
                     ...entry,
                     outside: true,
-                    reason: `${entry.what ?? "path"} resolves outside the workspace through a symlink: ${entry.path}`
+                    reason: `${entry.what ?? "path"} resolves outside the workspace through a symlink: \`${entry.path}\``
                 });
             }
             const match = sensitiveMatch(entry.path, sensitiveConfig);
@@ -513,7 +526,7 @@ export function apply(ctx, config = {}) {
         if (verdict.choice === CHOICE.once || verdict.choice === CHOICE.always) return {kind: "allow"};
         if (verdict.channel === CHANNEL.systemDialog) return {
             kind: "deny",
-            reason: `[workspace-only] the user rejected ${exec.name}: ${reason}`
+            reason: `[workspace-only] the user rejected \`${exec.name}\`: ${reason}`
         };
         return {kind: "deny", reason: `[workspace-only] ${reason} — the user denied this call`};
     });

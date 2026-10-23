@@ -202,7 +202,7 @@ function pathEntry(value, root, what) {
         return {
             path: expanded,
             what,
-            outside, ...outside ? {reason: `${what} references the user home: ${value}`} : {}
+            outside, ...outside ? {reason: `${what} references the user home: \`${value}\``} : {}
         };
     }
     // 无法解析的家目录写法（或 `~user`）：fail-safe，按外部判定。
@@ -210,10 +210,10 @@ function pathEntry(value, root, what) {
         path: value,
         what,
         outside: true,
-        reason: `${what} references the user home: ${value}`
+        reason: `${what} references the user home: \`${value}\``
     };
     const outside = !lexicallyWithin(value, root);
-    return {path: value, what, outside, ...outside ? {reason: `${what} is outside the workspace: ${value}`} : {}};
+    return {path: value, what, outside, ...outside ? {reason: `${what} is outside the workspace: \`${value}\``} : {}};
 }
 
 /**
@@ -251,7 +251,7 @@ export function shellEntries(command, root) {
                     found.push({
                         path: expanded,
                         what: "command",
-                        outside, ...outside ? {reason: `command references the user home: ${token}`} : {}
+                        outside, ...outside ? {reason: `command references the user home: \`${token}\``} : {}
                     });
                     if (outside) return found;
                     continue;
@@ -264,7 +264,7 @@ export function shellEntries(command, root) {
                     path: t,
                     what: "command",
                     outside: true,
-                    reason: `command references the user home: ${token}`
+                    reason: `command references the user home: \`${token}\``
                 });
                 return found;
             }
@@ -277,7 +277,7 @@ export function shellEntries(command, root) {
                 found.push({
                     path: t,
                     what: "command",
-                    outside, ...outside ? {reason: `command references a path outside the workspace: ${token}`} : {}
+                    outside, ...outside ? {reason: `command references a path outside the workspace: \`${token}\``} : {}
                 });
                 continue;
             }
@@ -286,7 +286,7 @@ export function shellEntries(command, root) {
                 found.push({
                     path: t,
                     what: "command",
-                    outside, ...outside ? {reason: `command escapes the workspace: ${token}`} : {}
+                    outside, ...outside ? {reason: `command escapes the workspace: \`${token}\``} : {}
                 });
             }
             for (const match of t.matchAll(INTERIOR_PATH)) {
@@ -299,7 +299,7 @@ export function shellEntries(command, root) {
                     found.push({
                         path: expandedPath,
                         what: "command",
-                        outside, ...outside ? {reason: `command references the user home: ${path}`} : {}
+                        outside, ...outside ? {reason: `command references the user home: \`${path}\``} : {}
                     });
                     continue;
                 }
@@ -308,7 +308,7 @@ export function shellEntries(command, root) {
                         path,
                         what: "command",
                         outside: true,
-                        reason: `command references the user home: ${path}`
+                        reason: `command references the user home: \`${path}\``
                     });
                     return found;
                 }
@@ -316,7 +316,7 @@ export function shellEntries(command, root) {
                 found.push({
                     path,
                     what: "command",
-                    outside, ...outside ? {reason: `command references a path outside the workspace: ${path}`} : {}
+                    outside, ...outside ? {reason: `command references a path outside the workspace: \`${path}\``} : {}
                 });
             }
         }
@@ -348,27 +348,27 @@ export function scanTargets(exec, root) {
     const args = exec.arguments ?? {};
     const pathArg = Object.hasOwn(PATH_TOOLS, exec.name) ? PATH_TOOLS[exec.name] : void 0;
     if (pathArg !== void 0) {
-        const target = pathEntry(args[pathArg], root, `${exec.name} target`);
+        const target = pathEntry(args[pathArg], root, `\`${exec.name}\` target`);
         return target === void 0 ? [] : [target];
     }
     if (SEARCH_TOOLS.has(exec.name)) {
         const found = [];
         if (args.path !== void 0) {
-            const target = pathEntry(args.path, root, `${exec.name} search path`);
+            const target = pathEntry(args.path, root, `\`${exec.name}\` search path`);
             if (target !== void 0) found.push(target);
         }
         if (typeof args.pattern === "string" && isAbsoluteOrEscapingPattern(args.pattern)) {
             found.push({
                 path: args.pattern,
-                what: `${exec.name} pattern`,
+                what: `\`${exec.name}\` pattern`,
                 outside: true,
-                reason: `${exec.name} pattern is absolute or escapes the workspace: ${args.pattern}`
+                reason: `\`${exec.name}\` pattern is absolute or escapes the workspace: \`${args.pattern}\``
             });
         }
         return found;
     }
     if (SHELL_TOOLS.has(exec.name)) {
-        const workdir = args.workdir !== void 0 ? pathEntry(args.workdir, root, `${exec.name} working directory`) : void 0;
+        const workdir = args.workdir !== void 0 ? pathEntry(args.workdir, root, `\`${exec.name}\` working directory`) : void 0;
         const commandTargets = shellEntries(args.command, root);
         return workdir === void 0 ? commandTargets : [workdir, ...commandTargets];
     }
@@ -400,11 +400,11 @@ function genericEntry(value, root, what) {
         return {
             path: expanded,
             what,
-            outside, ...outside ? {reason: `${what} references the user home: ${value}`} : {}
+            outside, ...outside ? {reason: `${what} references the user home: \`${value}\``} : {}
         };
     }
     const outside = HOME_PREFIX.test(value) ? true : !lexicallyWithin(value, root);
-    return {path: value, what, outside, ...outside ? {reason: `${what} is outside the workspace: ${value}`} : {}};
+    return {path: value, what, outside, ...outside ? {reason: `${what} is outside the workspace: \`${value}\``} : {}};
 }
 
 /**
@@ -420,7 +420,7 @@ export function genericTargets(exec, root) {
         if (typeof value === "string") {
             if (value.length === 0 || value.length > 4096 || seen.has(value)) return;
             seen.add(value);
-            const entry = genericEntry(value, root, key === "" ? `${exec.name} argument` : `${exec.name} ${key}`);
+            const entry = genericEntry(value, root, key === "" ? `\`${exec.name}\` argument` : `\`${exec.name}\` ${key}`);
             if (entry !== void 0) found.push(entry);
             return;
         }
@@ -510,7 +510,7 @@ export function sensitiveMatch(value, config = {}) {
     if (matches(config.allowPatterns)) return void 0;
     if (matches(config.alwaysPatterns)) return void 0;
     const hit = (Array.isArray(config.patterns) ? config.patterns : []).find((pattern) => globToRegExp(pattern).test(name));
-    return hit === void 0 ? void 0 : {pattern: hit, reason: `sensitive file (matches ${hit}): ${value}`};
+    return hit === void 0 ? void 0 : {pattern: hit, reason: `sensitive file (matches \`${hit}\`): \`${value}\``};
 }
 
 /** 路径指向敏感文件时返回原因，否则 undefined（任务 T4）。 */
