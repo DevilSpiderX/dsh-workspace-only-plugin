@@ -27,6 +27,7 @@ node tmp/smoke/run.mjs            # 端到端 smoke（stub dsh 包 + 真 schemas
 - 提交信息类型前缀用英文（`feat:`/`fix:`/`docs:`/`build:` 等），正文中英文均可，可带任务编号（T1 起连续编号，现状已到 T16+）；一个任务一个 commit。
 - README/docs/代码注释均写中文（提交信息前缀仍用英文）。
 - **缩进用 4 个空格，禁止 tab**（`src/`、`scripts/`、vite 配置、YAML 全适用）；仓库无 formatter 兜底，新代码靠自觉。
+- **JS 变量声明禁止 `var`**：不再重新赋值的用 `const`（含 `const X = class {...}` 这类类表达式），确需重新赋值的用 `let`。
 
 ## 结构
 

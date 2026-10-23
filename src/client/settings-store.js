@@ -9,7 +9,7 @@ import {createSnapshotStore} from "./snapshot-store.js";
  * 拿不到 `remote.<ns>` 访问器，除非自带生成的 client contribution。
  * store 接口保持不变，设置页与 composer 选择器仍是纯展示层。
  */
-var WorkspaceOnlySettingsController = class {
+const WorkspaceOnlySettingsController = class {
     remote;
     connection;
     store = createSnapshotStore({

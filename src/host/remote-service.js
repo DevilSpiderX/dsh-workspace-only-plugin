@@ -62,7 +62,7 @@ export const REMOTE_METHODS = Object.freeze(Object.keys(REMOTE_WIRES));
 /**
  * 插件交进来的管理表面：对 Config 与会话状态的纯操作。每个钩子都返回普通 JSON。
  */
-var WorkspaceOnlyRemoteService = class extends Service {
+const WorkspaceOnlyRemoteService = class extends Service {
     hooks;
 
     constructor(ctx, hooks) {
