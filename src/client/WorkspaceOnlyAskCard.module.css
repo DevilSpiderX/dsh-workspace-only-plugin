@@ -37,6 +37,14 @@
     flex: none;
 }
 
+/* T29：裁决倒计时（剩余秒数），行尾展示；等宽数字避免每秒抖动。 */
+.askCountdown {
+    margin-left: auto;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    opacity: .9;
+}
+
 .askBody {
     box-sizing: border-box;
     max-height: var(--dsh-composer-text-max-height);

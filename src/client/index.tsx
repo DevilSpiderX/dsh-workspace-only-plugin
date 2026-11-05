@@ -23,6 +23,8 @@ interface AskWire {
     readonly reason?: unknown;
     readonly dir?: unknown;
     readonly sensitive?: unknown;
+    // T29：Host 的裁决超时（毫秒），卡片倒计时的初值。
+    readonly dialogTimeoutMs?: unknown;
 }
 
 /** 平台 pending interaction 的最小契约（`registerPendingInteraction` 入参）。 */
@@ -35,6 +37,8 @@ interface PendingInteractionLike {
     toolName?: string | undefined;
     reason?: string | undefined;
     dir?: string | undefined;
+    /** T29：透传给卡片渲染倒计时（纯展示）。 */
+    dialogTimeoutMs?: number | undefined;
     result: Promise<unknown>;
     answerable: boolean;
     answer(choice: string): Promise<unknown>;
@@ -266,6 +270,10 @@ function apply(ctx: ClientContext): void {
             toolName: String(ask.toolName ?? "tool"),
             reason: String(ask.reason ?? ""),
             dir: String(ask.dir ?? ""),
+            // T29：倒计时初值透传给卡片（纯展示）；畸形值降级为不渲染倒计时。
+            dialogTimeoutMs: typeof ask.dialogTimeoutMs === "number" && Number.isSafeInteger(ask.dialogTimeoutMs) && ask.dialogTimeoutMs >= 1
+                ? ask.dialogTimeoutMs
+                : void 0,
             result: completion.promise,
             get answerable() {
                 return !settled;

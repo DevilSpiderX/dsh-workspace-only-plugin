@@ -6,7 +6,7 @@ DeepSeek Harness (dsh) 插件：把**任何沙箱模式**（read-only / workspac
 
 - **全局开关**（`Config.enabled`）：开启后，越出工作区的 `read`/`write`/`edit`/`read_image`/`glob`/`grep`/`bash`/`pwsh` 调用都会停下来问用户；关闭则完全不干预。
 - **三键裁决**（`仅此一次 / 总是允许该目录 / 拒绝`）：
-  - 越界调用触发时，输入栏被一张**三键卡片接管**——与 dsh 权限提升面板同款形态（警示条 + 工具/目标路径/原因 + 按钮行），`Enter`=仅此一次、`Esc`=拒绝；
+  - 越界调用触发时，输入栏被一张**三键卡片接管**——与 dsh 权限提升面板同款形态（警示条 + 工具/目标路径/原因 + 按钮行），`Enter`=仅此一次、`Esc`=拒绝；警示条行尾带**倒计时**（剩余秒数，初值 `Config.dialogTimeoutMs`，单位秒；纯展示，不参与裁决）；
   - **总是允许该目录** → 目录写入**会话级**白名单条目（session=授权会话的血缘根主会话 id，仅本会话及其子代理生效、不同主会话互相隔离；持久化到 `<DSH_HOME>/dsh-workspace-only-plugin/sessions/<主会话id>/whitelist.json`，**不进** profile 的 `cordis.patch.yml`），同目录后续直接放行；
   - **拒绝 / 超时**（`Config.dialogTimeoutMs`，默认 120s）→ 拒绝该次调用；
   - **同一会话的并发询问逐张排队**（子代理并行工具调用就是同会话并发）：一次只出现一张卡片，答完这张才轮到下一张，不会出现「点了不关」（多张卡片挤占同一渲染席位）；排队中的调用若已被新写入的白名单条目覆盖，出队时直接放行（等效批量放行），不再弹卡；
@@ -168,7 +168,7 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
 - 词法围栏**默认不解析符号链接**（残余面，T11）：工作区内符号链接指向区外时，路径仍是「工作区内」词法字符串 → 不拦截，底层 fs 操作会跟随链接越界——与 MiMo `AppFileSystem.contains` 同哲学（两边一致）。开启 `realpathCheck` 后，命中「工作区内」的路径经 `fs.realpath` 复核（对尚不存在的目标取最深存在祖先 canonicalize 后重拼余段，覆盖「写新文件、父目录是链接」场景；root 与目标双方都解析，macOS `/tmp`→`/private/tmp` 不误拒）：解析到区外改判越界照走三键，解析失败 fail-closed 按越界询问。残余面收窄但仍存：**白名单 / deny 规则仍按词法路径匹配**（链接路径与其真身不互通）。
 - 默认只精确扫描 8 个工具（`read`/`write`/`edit`/`read_image`/`glob`/`grep`/`bash`/`pwsh`，误报低）；MCP/插件注册的其他工具默认不设防。开启 `scanAllTools` 进入全量保守模式：任何工具的参数里出现路径形状值都会判定，配合 `scanIgnoreTools` 豁免误报工具；shell 命令内的**相对**敏感路径（如 `cat .env`）不在词法扫描范围内。
 - 在 workspace-write 会话，批准后的越界**写**仍受进程内写围栏拦截（`FS_SANDBOX_DENIED`），随后走 dsh 既有 `sandbox_permissions` 升权再确认一次——写操作始终需要明确同意；携带 `sandbox_permissions` 的调用仅在官方升权弹窗必现（目标模式严格宽于会话当前模式）时跳过本插件门禁（避免双弹窗），重复/畸形升权照走三键。
-- 三键卡片渲染依赖 Web 端（`conversation.composer` 槽位接管）；无 Web 客户端时回退通用问题卡片（TUI 等）→ 官方审批弹窗。卡片超时视为拒绝。设置 `fastDenyMs > 0` 可让无应答渠道的调用（后台/无 UI）秒级拒绝而不挂满超时（`fast-deny` 审计通道）。卡片席位按 `requestId` 去重；询问在 Host 侧结算（超时、批量放行、其他客户端作答）后广播 `askDone`，各端残留卡片自动撤下。**残留卡片的双保险**（T16）：回退问答卡在本地超时/迟到决策后一律 `abort`（平台随之撤卡，否则问答卡会永远留在 composer）；迟到挂载的卡片收到 `announce: {ok:false}`（Host 已结算）立即自清；另有本地自毁计时器（`dialogTimeoutMs` + 15 秒宽限）兜住 `askDone` 丢失的极端情形——本地撤卡不改裁决（Host 超时本来就 fail-closed 拒绝）。
+- 三键卡片渲染依赖 Web 端（`conversation.composer` 槽位接管）；无 Web 客户端时回退通用问题卡片（TUI 等）→ 官方审批弹窗。卡片超时视为拒绝。设置 `fastDenyMs > 0` 可让无应答渠道的调用（后台/无 UI）秒级拒绝而不挂满超时（`fast-deny` 审计通道）。卡片席位按 `requestId` 去重；询问在 Host 侧结算（超时、批量放行、其他客户端作答）后广播 `askDone`，各端残留卡片自动撤下。**残留卡片的双保险**（T16）：回退问答卡在本地超时/迟到决策后一律 `abort`（平台随之撤卡，否则问答卡会永远留在 composer）；迟到挂载的卡片收到 `announce: {ok:false}`（Host 已结算）立即自清；另有本地自毁计时器（`dialogTimeoutMs` + 15 秒宽限）兜住 `askDone` 丢失的极端情形——本地撤卡不改裁决（Host 超时本来就 fail-closed 拒绝）。**卡片倒计时**（T29）：ask 载荷携带 `dialogTimeoutMs`，卡片自挂载起按秒递减显示剩余时间（回答后冻结、到 0 停在 0）；倒计时纯展示，超时仍由 Host 裁决（拒绝），载荷缺字段时不渲染倒计时、三键不受影响。
 - composer 档位选择框与会话页「白名单目录」视图依赖 Web 端槽位（`conversation.input.left` / `conversation.view`，用 `@deepseek-ai/dsh-client-ui-primitives` 渲染）；TUI 等无此界面时档位保持「仅工作区内」，白名单只能从设置页或询问卡片维护。待审批徽章依赖 Web 端槽位（`conversation.session.header.actions`，紧邻官方子代理下拉）；子代理 ask 在父会话行的「待审批」黄点走平台 pending 投影（precedence -1 的影子交互，永不遮蔽官方审批卡与本插件卡片），不依赖额外槽位。
 - 档位的读写口径是**工具级**的：shell（`bash`/`pwsh`）命令内无法静态分辨读写，一律按写处理（「工作区外只读」下 shell 越界照弹）；`scanAllTools` 覆盖的未知工具同样保守按写。
 - 沙箱执行约束全部沿用官方（含 win32 的 ACL 受限令牌 runner 与 `dsh-fs-sandbox` 写围栏）：本插件只在工具层加门禁，不改动任何沙箱后端。

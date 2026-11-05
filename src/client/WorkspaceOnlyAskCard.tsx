@@ -13,6 +13,8 @@ export interface AskCardMatch {
     /** 命中敏感文件：always 按钮换成 pattern 措辞（任务 T4）。 */
     readonly sensitive?: boolean | undefined;
     readonly answerable?: boolean | undefined;
+    /** T29：Host 等待裁决的上限（毫秒），倒计时的初值；缺失或非法则不渲染倒计时。 */
+    readonly dialogTimeoutMs?: number | undefined;
     answer(choice: string): unknown;
 }
 
@@ -39,6 +41,23 @@ export function WorkspaceOnlyAskCard(props: AskCardProps): JSX.Element {
     const [answered, setAnswered] = useState(false);
     const waiting = useRef(false);
     const active = useRef(true);
+    // T29：倒计时（纯展示，不参与裁决——Host 超时本来就拒）。deadline 只在
+    // 挂载时定一次：Host 的裁决计时自 presence 握手起算，卡片挂载即 announce，
+    // 两者基本同点。绝对时间基准让休眠/时钟漂移恢复后自动校正；回答后冻结。
+    const timeoutMs = typeof ask.dialogTimeoutMs === "number" && Number.isSafeInteger(ask.dialogTimeoutMs) && ask.dialogTimeoutMs >= 1
+        ? ask.dialogTimeoutMs
+        : void 0;
+    const [deadline] = useState<number | undefined>(() => timeoutMs === void 0 ? void 0 : Date.now() + timeoutMs);
+    const [remaining, setRemaining] = useState<number | undefined>(() => timeoutMs === void 0 ? void 0 : Math.ceil(timeoutMs / 1000));
+    useEffect(() => {
+        if (deadline === void 0 || answered) return;
+        const timer = setInterval(() => {
+            const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+            setRemaining(left);
+            if (left <= 0) clearInterval(timer);
+        }, 1000);
+        return () => clearInterval(timer);
+    }, [answered, deadline]);
     useEffect(() => {
         active.current = true;
         // Presence 握手：只有实际挂载的卡片才告诉 Host 等待裁决。
@@ -75,6 +94,9 @@ export function WorkspaceOnlyAskCard(props: AskCardProps): JSX.Element {
                 <div className={css.askStrip}>
                     <span className={css.askDot}/>
                     {t("ask.strip")}
+                    {remaining === void 0 ? null : (
+                        <span className={css.askCountdown}>{t("ask.countdown", {seconds: remaining})}</span>
+                    )}
                 </div>
                 <div className={css.askBody} tabIndex={0} role="group">
                     <div className={css.askHeadline}>{t("ask.headline", {toolName: ask.toolName})}</div>

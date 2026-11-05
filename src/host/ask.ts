@@ -126,6 +126,9 @@ export interface AskNotice {
     readonly sessionId: string | undefined;
     readonly parentSessionId: string | null;
     readonly sensitive?: true;
+    // T29：Host 等待裁决的上限（`Config.dialogTimeoutMs`）。客户端据此在
+    // 三键卡片上渲染倒计时——纯展示，不参与裁决（Host 超时本来就拒）。
+    readonly dialogTimeoutMs: number;
 }
 
 /** 一个待决 ask 的席位（`pending` map 的值）。 */
@@ -544,7 +547,9 @@ async function askPanel(ctx: Context, {
                 // 没有父会话（null），不挂影子。
                 parentSessionId: session?.header?.parentSession ?? null,
                 // 任务 T4：命中敏感文件时，卡片把 always 按钮文案换成 pattern 维度的措辞。
-                ...sensitive === true ? {sensitive: true} : {}
+                ...sensitive === true ? {sensitive: true} : {},
+                // T29：卡片倒计时的初值（Host 等待裁决的上限）。
+                dialogTimeoutMs: timeoutMs
             } satisfies AskNotice
         });
     } catch {
