@@ -43,9 +43,10 @@ function isSafeSessionId(rootId: string | undefined): rootId is string {
 /**
  * `<DSH_HOME>/dsh-workspace-only-plugin/sessions`。home 与内置默认白名单
  * 同源（`resolveDshHome`，每次实时解析）；后续拼接是真实 fs 路径，按宿主
- * `path` 语义（开发机 Windows 上与 home 形态一致）。
+ * `path` 语义（开发机 Windows 上与 home 形态一致）。T31 起也供
+ * `session-cleanup.ts` 的孤儿目录清理共用同一根。
  */
-function sessionsRoot(): string {
+export function sessionsRoot(): string {
     return join(resolveDshHome(), PLUGIN_DIR, SESSIONS_DIR);
 }
 

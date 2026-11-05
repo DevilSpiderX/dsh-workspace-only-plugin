@@ -19,6 +19,7 @@ import {
 import type {PathEntry, SensitiveConfig, SensitiveHit} from "./scanner.ts";
 import {ensureScopePersisted, rootSessionIdOf, SCOPE, sessionScope, setSessionScope} from "./session-state.ts";
 import {parseAllowDirInput} from "./allow-command.ts";
+import {knownSessionIds, pruneOrphanSessionDirs, PRUNE_INTERVAL_MS} from "./session-cleanup.ts";
 import type {ResolveParent, Scope} from "./session-state.ts";
 import {addSessionDir, mergeSessionDirs, readAllSessionEntries, readSessionDirs, removeSessionDir} from "./session-whitelist.ts";
 import type {Context} from "@deepseek-ai/cordis";
@@ -762,6 +763,13 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
     void migrateSessionWhitelist().catch((error) => {
         console.warn("[workspace-only] session whitelist migration failed", error);
     });
+
+    // T31：孤儿会话白名单目录清理——启动时清一次，之后每 24h 一轮。
+    // 定时器 unref（不挂住宿主事件循环），随插件 fiber 释放。
+    void pruneOrphanWhitelist(ctx);
+    const pruneTimer = setInterval(() => { void pruneOrphanWhitelist(ctx); }, PRUNE_INTERVAL_MS);
+    (pruneTimer as {unref?: () => void}).unref?.();
+    ctx.effect(() => () => clearInterval(pruneTimer), "workspace-only: orphan whitelist prune timer");
 }
 
 /** 本宿主的全部活跃会话，防御性写法（sessions 服务可能缺席）。 */
@@ -786,5 +794,33 @@ function resolveSession(ctx: Context, sessionId: string | undefined): Session | 
         return session as Session | undefined;
     } catch {
         return void 0;
+    }
+}
+
+/**
+ * T31：清一轮孤儿会话白名单目录。`sessionQuery` 缺席或 `listSessions()`
+ * 失败时整轮跳过（fail-safe：宁可留垃圾，绝不拿空集合误删）。
+ */
+async function pruneOrphanWhitelist(ctx: Context): Promise<void> {
+    let headers: {id?: unknown; parentSession?: unknown}[];
+    try {
+        // sessionQuery 是注入服务，类型在未钉进 devDeps 的包里，按最小形状收窄。
+        const query = ctx.get("sessionQuery") as {listSessions?: (signal?: AbortSignal) => Promise<unknown>} | undefined;
+        if (typeof query?.listSessions !== "function") return;
+        const listed = await query.listSessions();
+        headers = Array.isArray(listed)
+            ? listed.map((record) => (record as {header?: {id?: unknown; parentSession?: unknown}}).header ?? {})
+            : [];
+    } catch (error) {
+        console.warn("[workspace-only] orphan whitelist prune skipped: session query failed", error);
+        return;
+    }
+    try {
+        const outcome = await pruneOrphanSessionDirs(knownSessionIds(headers));
+        if (outcome.pruned.length > 0) {
+            console.info(`[workspace-only] pruned ${outcome.pruned.length} orphan session whitelist dir(s): ${outcome.pruned.join(", ")}`);
+        }
+    } catch (error) {
+        console.warn("[workspace-only] orphan whitelist prune failed", error);
     }
 }

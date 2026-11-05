@@ -90,7 +90,8 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
 - 条目与配置彻底解耦：写/删会话级条目不再触碰 `cordis.patch.yml`，profile 的配置 override 整体替换也冲不掉它们；
 - 读取**实时**生效（每次判定读文件），手工编辑立即可见；文件缺失/损坏按**空列表**处理（fail-closed：只会多问、不会少问）；
 - 同一会话的并发写入串行化（不会互相覆盖）；文件写失败时该次授权回退「仅此一次」并在日志告警；
-- **升级迁移**：启动时发现 Config `always` 里残留的 `{session, dir}` 条目会自动搬进对应文件并在成功后从 Config 移除（按会话分组提交，某组失败只留该组、下次启动重试，期间条目照常生效）。
+- **升级迁移**：启动时发现 Config `always` 里残留的 `{session, dir}` 条目会自动搬进对应文件并在成功后从 Config 移除（按会话分组提交，某组失败只留该组、下次启动重试，期间条目照常生效）；
+- **孤儿目录清理（T31）**：会话被**删除**后（转录物理移除，含 `@michengai/dsh-archive-manager` 等第三方删除工具），对应 `sessions/<主会话id>/` 目录会自动清掉——插件启动时清一次，之后每 24 小时一轮。**归档不清**（归档只是标记、会话记录仍在，恢复回来白名单还在）；判定依据是 `sessionQuery.listSessions()` 的已知会话 id 集合（全部 `id` ∪ 全部 `parentSession` 值，覆盖一切血缘根 key）。清理方向 fail-safe：会话列表取不到/失败整轮跳过、孤儿目录一小时宽限期内保留（兜刚写入的新条目）、单项删除失败跳过该项——**宁可留垃圾，绝不误删**；误删的后果也只是门禁多问几次。
 
 ### 内置默认白名单（不占配置字段）
 
@@ -197,10 +198,11 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
 pnpm install && pnpm build        # 类型检查（tsc --noEmit，strict）+ 构建 src/ → lib/（产物入库；改源码后必须重建并随源码同 commit）
 node scripts/verify-scanner.ts   # 词法扫描用例（POSIX + Windows，含误报对照）
 node scripts/verify-allow-command.ts  # /wo-allow 目录解析用例（家目录展开、绝对路径判定、归一化）
+node scripts/verify-session-cleanup.ts  # 孤儿会话白名单目录清理用例（已知 id 集合、宽限期、fail-safe）
 node scripts/check-compat.ts     # 对本机 dsh 安装做契约自检
 ```
 
-实现结构：源码在 `src/`（TypeScript/TSX，strict 类型检查进 build 链）、构建产物在 `lib/`（`pnpm build` 生成，随 git 分发）。`src/host/scanner.ts`（纯词法扫描 + 读写口径 `toolAccessKind` + DSH_HOME 解析，可独立测试）、`src/host/ask.ts`（三键会合点与回退链）、`src/host/approval-compat.ts`（官方审批瀑布封装）、`src/host/session-state.ts`（会话档位三态与审计记录）、`src/host/session-whitelist.ts`（会话级白名单的文件持久化与迁移）、`src/host/allow-command.ts`（`/wo-allow` 命令的目录解析，纯函数可独立测试）、`src/host/remote-service.ts`（client→host 管理 RPC）、`src/host/index.ts`（门禁装配）、`src/client/**`（React TSX 源码：设置页、composer 会话档位选择框、会话页「白名单目录」视图、会话标题栏待审批徽章与父会话行黄点，UI 组件用 `@deepseek-ai/dsh-client-ui-primitives` 的 `Menu`/`Input`/`Button`，与官方权限选择器同款）→ 构建为单文件 `lib/client.js`。
+实现结构：源码在 `src/`（TypeScript/TSX，strict 类型检查进 build 链）、构建产物在 `lib/`（`pnpm build` 生成，随 git 分发）。`src/host/scanner.ts`（纯词法扫描 + 读写口径 `toolAccessKind` + DSH_HOME 解析，可独立测试）、`src/host/ask.ts`（三键会合点与回退链）、`src/host/approval-compat.ts`（官方审批瀑布封装）、`src/host/session-state.ts`（会话档位三态与审计记录）、`src/host/session-whitelist.ts`（会话级白名单的文件持久化与迁移）、`src/host/session-cleanup.ts`（孤儿会话白名单目录清理，可独立测试）、`src/host/allow-command.ts`（`/wo-allow` 命令的目录解析，纯函数可独立测试）、`src/host/remote-service.ts`（client→host 管理 RPC）、`src/host/index.ts`（门禁装配）、`src/client/**`（React TSX 源码：设置页、composer 会话档位选择框、会话页「白名单目录」视图、会话标题栏待审批徽章与父会话行黄点，UI 组件用 `@deepseek-ai/dsh-client-ui-primitives` 的 `Menu`/`Input`/`Button`，与官方权限选择器同款）→ 构建为单文件 `lib/client.js`。
 
 ## 升级说明（会话级放飞 → 会话档位）
 
@@ -208,6 +210,7 @@ node scripts/check-compat.ts     # 对本机 dsh 安装做契约自检
 - `alwaysScope` 配置项已移除：询问卡片「总是允许该目录」现在固定写**会话级**条目（在会话页「白名单目录」管理），要全局放行请在 设置 → Workspace Only 手动添加；profile 的 `cordis.patch.yml` 若显式写过 `alwaysScope`，升级后删掉该行即可；
 - 「总是允许该目录」新写的会话级条目只对本会话及其子代理生效（绑主会话血缘根）；旧的全局字符串条目保持处处生效；T9 时代按项目共享的 `{root, dir}` 条目已被软忽略（不匹配不显示，配置里留着也无害），重新授权即写成新会话级条目；
 - **T25：会话级条目搬家**——不再存 profile 的 `cordis.patch.yml`（`always` 只留全局字符串条目），改存 `<DSH_HOME>/dsh-workspace-only-plugin/sessions/<主会话id>/whitelist.json`。升级后首次启动自动把 `always` 里残留的 `{session, dir}` 条目迁往对应文件（迁移失败的组留在 Config 里继续生效并自动重试）；管理 RPC 形状不变（`snapshot.always` 仍返回 `{session, dir}` / 字符串条目）。
+- **T31：孤儿目录清理**——会话删除后残留的 `sessions/<主会话id>/` 目录自动清掉（启动时 + 每 24h 一轮；归档不清、删除才清，判据与 fail-safe 见「会话级白名单文件」节）。
 - 管理 RPC 有变更（若你有脚本直调 `workspaceOnly/*`）：`setBypass(sessionId, enabled)` → `setScope(sessionId, scope)`（`scope` ∈ `workspace` / `outside-read` / `outside-write`），新增 `addGlobalAlways(dir)`，`snapshot` 的 `sessions[]` 由 `bypass: boolean` 改为 `scope: string`。
 - 管理 RPC 的 `args` 字段名（`sessionId`/`scope`/`dir`/`entry`/`requestId`/`choice`）即各方法的 wire 契约，由插件注册的 strict 调用描述符固定（此前源码签名推断的方式在压缩产物上会全部报 `args fields do not match the descriptor`）；改方法签名或调用载荷后跑 `node scripts/verify-remote-service.ts` 核对三方一致。
 
