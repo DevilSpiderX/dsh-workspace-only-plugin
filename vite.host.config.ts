@@ -12,7 +12,7 @@ export default defineConfig({
         minify: "oxc",
         target: "esnext",
         rollupOptions: {
-            input: "src/host/index.js",
+            input: "src/host/index.ts",
             // Vite 的 lib 模式默认把它设为 false，Rollup 对 preserveModules 会
             // 拒绝该值；"exports-only" 保留每个模块的导出面。
             preserveEntrySignatures: "exports-only",

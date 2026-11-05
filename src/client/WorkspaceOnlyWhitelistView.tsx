@@ -1,15 +1,27 @@
 import {useEffect, useState} from "react";
+import type {ChangeEvent, JSX, KeyboardEvent} from "react";
 import {Button, Input} from "@deepseek-ai/dsh-client-ui-primitives";
-import {scopedEntries} from "./shared.js";
+import {scopedEntries} from "./shared.ts";
+import type {SessionAlwaysEntry, TranslateFn} from "./shared.ts";
+import type {SettingsState} from "./settings-store.ts";
 import css from "./WorkspaceOnlyWhitelistView.module.css";
 import entryRowCss from "./entryRow.module.css";
+
+export interface WhitelistViewProps {
+    useWorkspaceOnly: (selector: (snapshot: SettingsState) => SettingsState) => SettingsState;
+    sessionId: string | undefined;
+    addEntry: (dir: string) => unknown;
+    removeEntry: (entry: SessionAlwaysEntry) => unknown;
+    load: () => unknown;
+    t: TranslateFn;
+}
 
 /**
  * 会话页视图（conversation.view 标签页「白名单目录」）：本会话工作区
  * 根目录的会话级白名单条目——即询问卡片「总是允许该目录」写入的内容。
  * 全局条目在 设置 → Workspace Only 中管理。
  */
-export function WorkspaceOnlyWhitelistView({useWorkspaceOnly, sessionId, addEntry, removeEntry, load, t}) {
+export function WorkspaceOnlyWhitelistView({useWorkspaceOnly, sessionId, addEntry, removeEntry, load, t}: WhitelistViewProps): JSX.Element {
     const state = useWorkspaceOnly((snapshot) => snapshot);
     const [draft, setDraft] = useState("");
     useEffect(() => {
@@ -39,10 +51,10 @@ export function WorkspaceOnlyWhitelistView({useWorkspaceOnly, sessionId, addEntr
                     value={draft}
                     placeholder={t("panel.placeholder")}
                     disabled={busy}
-                    onChange={(event) => {
+                    onChange={(event: ChangeEvent<HTMLInputElement>) => {
                         setDraft(event.target.value);
                     }}
-                    onKeyDown={(event) => {
+                    onKeyDown={(event: KeyboardEvent<HTMLInputElement>) => {
                         if (event.key !== "Enter" || event.nativeEvent.isComposing || event.keyCode === 229) return;
                         const entry = draft.trim();
                         if (entry !== "") {

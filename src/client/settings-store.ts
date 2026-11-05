@@ -1,4 +1,4 @@
-import {createSnapshotStore} from "./snapshot-store.js";
+import {createSnapshotStore} from "./snapshot-store.ts";
 
 /**
  * 基于 DSH 0.2 通道的 Workspace Only 状态控制器：持久化的开关/白名单
@@ -9,10 +9,81 @@ import {createSnapshotStore} from "./snapshot-store.js";
  * 拿不到 `remote.<ns>` 访问器，除非自带生成的 client contribution。
  * store 接口保持不变，设置页与 composer 选择器仍是纯展示层。
  */
+
+/** `ctx.remote.settings` 的最小形状（平台面，类型在未钉进 devDeps 的包里）。 */
+export interface SettingsRemoteApi {
+    describe(): Promise<unknown>;
+    mutate(ns: string, ops: unknown, revision: number | undefined): Promise<unknown>;
+}
+
+/** `ctx.remote` 的最小形状（仅用到 settings 子面）。 */
+export interface RemoteWithSettings {
+    settings: SettingsRemoteApi;
+}
+
+/** `ctx.connection` 的最小形状（Gateway 公开一元 RPC）。 */
+export interface GatewayConnection {
+    rpc: {call(path: string, endpoint: string, payload: {args: Record<string, unknown>}): Promise<unknown>};
+}
+
+/** settings/describe 的响应（wire 形状：host 侧产出，读取处宽松判定）。 */
+interface SettingsDescribeResponse {
+    readonly namespaces?: ReadonlyArray<Record<string, unknown>> | undefined;
+    readonly writable?: unknown;
+}
+
+/** 一条「最近询问」记录的展示形状。 */
+export interface RecentAskView {
+    dir: string;
+    toolName: string;
+    at: number;
+}
+
+/** 一个会话档位条目的展示形状。 */
+export interface SessionScopeView {
+    id: string;
+    rootId: string | undefined;
+    cwd: string;
+    scope: string;
+}
+
+/** 设置控制器的快照状态（展示层消费的形状）。 */
+export interface SettingsState {
+    status: "idle" | "loading" | "unavailable" | "saving" | "ready" | "error";
+    error: string | null;
+    writable: boolean;
+    enabled: boolean;
+    revision: number;
+    always: unknown[];
+    builtinAlways: string[];
+    deny: string[];
+    recent: RecentAskView[];
+    sessions: SessionScopeView[];
+    /** 任务 T16：Host 的 ask 截止时间，供卡片自毁兜底（丢失的 `askDone` 不能让过期卡片永远赖着）。 */
+    dialogTimeoutMs: number;
+}
+
+/** settings 的 namespace 视图（wire 形状，宽松读取）。 */
+interface NamespaceViewLike {
+    readonly ns?: unknown;
+    readonly revision?: unknown;
+    readonly value?: {readonly enabled?: unknown} | undefined;
+}
+
+/** `workspaceOnly/snapshot` 的响应（wire 形状，宽松读取）。 */
+interface RemoteSnapshotLike {
+    readonly always?: unknown;
+    readonly builtinAlways?: unknown;
+    readonly deny?: unknown;
+    readonly recent?: unknown;
+    readonly sessions?: unknown;
+    readonly dialogTimeoutMs?: unknown;
+}
+
 const WorkspaceOnlySettingsController = class {
-    remote;
-    connection;
-    store = createSnapshotStore({
+    remote: RemoteWithSettings;
+    connection: GatewayConnection;
+    store = createSnapshotStore<SettingsState>({
         status: "idle",
         error: null,
         writable: false,
@@ -28,31 +99,32 @@ const WorkspaceOnlySettingsController = class {
         dialogTimeoutMs: 120_000
     });
     generation = 0;
-    view;
+    view: NamespaceViewLike | undefined;
 
-    constructor(remote, connection) {
+    constructor(remote: RemoteWithSettings, connection: GatewayConnection) {
         this.remote = remote;
         this.connection = connection;
     }
 
-    unwrap(result) {
-        if (result === null || result === void 0 || result.ok !== true) throw new Error(result?.error?.message ?? "remote call failed");
-        return result.value;
+    unwrap(result: unknown): unknown {
+        const envelope = (result ?? {}) as {ok?: unknown; error?: {message?: unknown} | undefined; value?: unknown};
+        if (result === null || result === void 0 || envelope.ok !== true) throw new Error(String(envelope.error?.message ?? "remote call failed"));
+        return envelope.value;
     }
 
     /** 经 Gateway RPC 调用一个 `workspaceOnly/<method>` 端点。 */
-    call(method, args) {
+    call(method: string, args?: Record<string, unknown> | undefined): Promise<unknown> {
         return this.connection.rpc.call("/api", `workspaceOnly/${method}`, {args: args ?? {}});
     }
 
-    async load() {
+    async load(): Promise<void> {
         const generation = ++this.generation;
         this.store.update((state) => {
             state.status = "loading";
             state.error = null;
         });
         try {
-            const response = this.unwrap(await this.remote.settings.describe());
+            const response = this.unwrap(await this.remote.settings.describe()) as SettingsDescribeResponse;
             if (generation !== this.generation) return;
             const view = (response.namespaces ?? []).find((entry) => entry.ns === "workspace-only");
             if (view === void 0) {
@@ -73,23 +145,24 @@ const WorkspaceOnlySettingsController = class {
     }
 
     /** 从插件的 Remote 服务拉取管理状态（白名单、最近询问、会话档位）。 */
-    async refreshRemote() {
+    async refreshRemote(): Promise<void> {
         try {
-            const snapshot = this.unwrap(await this.call("snapshot", {}));
+            const snapshot = this.unwrap(await this.call("snapshot", {})) as RemoteSnapshotLike;
             this.store.update((state) => {
+                // wire 边界：集合由 Host 侧产出，形状与 RecentAskView/SessionScopeView 一致，集中归一。
                 state.always = Array.isArray(snapshot.always) ? snapshot.always : [];
-                state.builtinAlways = Array.isArray(snapshot.builtinAlways) ? snapshot.builtinAlways : [];
-                state.deny = Array.isArray(snapshot.deny) ? snapshot.deny : [];
-                state.recent = Array.isArray(snapshot.recent) ? snapshot.recent : [];
-                state.sessions = Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
-                if (Number.isSafeInteger(snapshot.dialogTimeoutMs) && snapshot.dialogTimeoutMs >= 1) state.dialogTimeoutMs = snapshot.dialogTimeoutMs;
+                state.builtinAlways = Array.isArray(snapshot.builtinAlways) ? snapshot.builtinAlways as string[] : [];
+                state.deny = Array.isArray(snapshot.deny) ? snapshot.deny as string[] : [];
+                state.recent = Array.isArray(snapshot.recent) ? snapshot.recent as RecentAskView[] : [];
+                state.sessions = Array.isArray(snapshot.sessions) ? snapshot.sessions as SessionScopeView[] : [];
+                if (Number.isSafeInteger(snapshot.dialogTimeoutMs) && (snapshot.dialogTimeoutMs as number) >= 1) state.dialogTimeoutMs = snapshot.dialogTimeoutMs as number;
             });
         } catch {
             // 没有管理服务的旧宿主保持仅设置页的 UI。
         }
     }
 
-    async select(enabled) {
+    async select(enabled: boolean): Promise<void> {
         const view = this.view;
         const state = this.store.getSnapshot();
         if (view === void 0 || !state.writable) return;
@@ -103,10 +176,10 @@ const WorkspaceOnlySettingsController = class {
                 op: "set",
                 path: ["enabled"],
                 value: enabled
-            }], view.revision));
+            }], typeof view.revision === "number" ? view.revision : void 0)) as NamespaceViewLike | undefined;
             if (generation !== this.generation) return;
             // `settings/mutate` 返回刷新后的 namespace 视图。
-            this.accept(next?.ns === "workspace-only" ? next : view, true);
+            this.accept(next?.ns === "workspace-only" && next !== void 0 ? next : view, true);
         } catch (error) {
             if (generation !== this.generation) return;
             this.fail(error);
@@ -114,7 +187,7 @@ const WorkspaceOnlySettingsController = class {
     }
 
     /** 经插件服务持久化一条会话级白名单条目（询问卡片、会话页）。 */
-    async allowAlways(dir, sessionId) {
+    async allowAlways(dir: string, sessionId: string | undefined): Promise<void> {
         try {
             this.unwrap(await this.call("addAlways", {dir, sessionId}));
             await this.refreshRemote();
@@ -124,7 +197,7 @@ const WorkspaceOnlySettingsController = class {
     }
 
     /** 经插件服务持久化一条全局白名单条目（设置页）。 */
-    async addGlobalAlways(dir) {
+    async addGlobalAlways(dir: string): Promise<void> {
         try {
             this.unwrap(await this.call("addGlobalAlways", {dir}));
             await this.refreshRemote();
@@ -133,7 +206,7 @@ const WorkspaceOnlySettingsController = class {
         }
     }
 
-    async removeAlways(entry) {
+    async removeAlways(entry: unknown): Promise<void> {
         try {
             this.unwrap(await this.call("removeAlways", {entry}));
             await this.refreshRemote();
@@ -143,7 +216,7 @@ const WorkspaceOnlySettingsController = class {
     }
 
     /** 任务 T5：经插件服务持久化一条永不放行规则（写入 Config.deny）。 */
-    async addDeny(entry) {
+    async addDeny(entry: string): Promise<void> {
         try {
             this.unwrap(await this.call("addDeny", {entry}));
             await this.refreshRemote();
@@ -152,7 +225,7 @@ const WorkspaceOnlySettingsController = class {
         }
     }
 
-    async removeDeny(entry) {
+    async removeDeny(entry: string): Promise<void> {
         try {
             this.unwrap(await this.call("removeDeny", {entry}));
             await this.refreshRemote();
@@ -161,7 +234,7 @@ const WorkspaceOnlySettingsController = class {
         }
     }
 
-    async clearRecent() {
+    async clearRecent(): Promise<void> {
         try {
             this.unwrap(await this.call("clearRecent", {}));
             await this.refreshRemote();
@@ -171,7 +244,7 @@ const WorkspaceOnlySettingsController = class {
     }
 
     /** 任务 D：设置某个会话的访问档位（workspace / outside-read / outside-write）。 */
-    async setScope(sessionId, scope) {
+    async setScope(sessionId: string, scope: string): Promise<void> {
         try {
             this.unwrap(await this.call("setScope", {sessionId, scope}));
             await this.refreshRemote();
@@ -180,23 +253,23 @@ const WorkspaceOnlySettingsController = class {
         }
     }
 
-    dispose() {
+    dispose(): void {
         this.generation += 1;
         this.view = void 0;
     }
 
-    accept(view, writable) {
+    accept(view: NamespaceViewLike, writable: boolean): void {
         this.view = view;
         this.store.update((state) => {
             state.status = "ready";
             state.error = null;
             state.writable = writable;
             state.enabled = view.value?.enabled === true;
-            state.revision = view.revision;
+            state.revision = typeof view.revision === "number" ? view.revision : state.revision;
         });
     }
 
-    fail(error) {
+    fail(error: unknown): void {
         this.store.update((state) => {
             state.status = "error";
             state.error = error instanceof Error ? error.message : String(error);

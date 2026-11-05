@@ -5,10 +5,9 @@
  * 事故背景：Gateway 的 source-mode 用 `Function.prototype.toString()` 从方法
  * 形参名提取 `args` 的 wire 字段名（gateway 的 `methodParameterNames`），而
  * `lib/remote-service.js` 是全压缩产物、形参名被 mangle 成 `e`/`t`，曾使全部
- * 带参端点报 `args fields do not match the descriptor: unexpected "..."`
- * （白名单添加/移除、权限选择栏、三键卡片应答全数失效）。修复后 wire 名固化
- * 在 `REMOTE_WIRES`（字符串字面量、免疫压缩）并注册 strict 描述符，但三方
- * 契约仍必须一致，本脚本逐项看守：
+ * 带参端点报 `args fields do not match the descriptor: unexpected "..."`。
+ * 修复后 wire 名固化在 `REMOTE_WIRES`（字符串字面量、免疫压缩）并注册 strict
+ * 描述符，但三方契约仍必须一致，本脚本逐项看守：
  *
  *   1. 源码形参名 == `REMOTE_WIRES`（source-mode 兜底通道 + 位置传参顺序）；
  *   2. `lib/` 产物的 `REMOTE_WIRES`/`REMOTE_METHODS` == 源码（导出面在压缩后
@@ -16,25 +15,26 @@
  *   3. 客户端 `call()` 发出的 args 键都是 `REMOTE_WIRES` 的子集
  *      （gateway 对缺省 src-json 参数放行，但 wire 外的键必报 unexpected）。
  *
- * 用法：`node scripts/verify-remote-service.mjs`（需先 `pnpm build` 生成 lib/）。
+ * 用法：`node scripts/verify-remote-service.ts`（需先 `pnpm build` 生成 lib/）。
  */
 import {readFileSync} from "node:fs";
+import {stripTypeScriptTypes} from "node:module";
 import {dirname, join} from "node:path";
 import {fileURLToPath, pathToFileURL} from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const read = (relative) => readFileSync(join(ROOT, relative), "utf8");
+const read = (relative: string): string => readFileSync(join(ROOT, relative), "utf8");
 
 let pass = 0;
 let total = 0;
-function check(ok, label) {
+function check(ok: boolean, label: string): void {
     total += 1;
     if (ok) pass += 1;
     console.log(`${ok ? "PASS" : "FAIL"}  ${label}`);
 }
 
 /** 模拟 gateway 的 `methodParameterNames`：取形参段按逗号切分。 */
-function parameterNames(source, method) {
+function parameterNames(source: string, method: string): string[] | null {
     const match = new RegExp(`async\\s+${method}\\(([^)]*)\\)`).exec(source);
     if (match === null) return null;
     const body = match[1].trim();
@@ -45,8 +45,8 @@ function parameterNames(source, method) {
  * 解析 `call("method", {a, b})` 调用点的 args 键。
  * 兼容简写属性（`{dir, sessionId}`）与显式键（`{requestId: ask.requestId}`）。
  */
-function callArgumentKeys(source) {
-    const found = new Map();
+function callArgumentKeys(source: string): Map<string, string[][]> {
+    const found = new Map<string, string[][]>();
     const pattern = /\.call\("(\w+)",\s*\{([^}]*)\}\)/g;
     for (const match of source.matchAll(pattern)) {
         const keys = match[2].trim() === ""
@@ -57,13 +57,17 @@ function callArgumentKeys(source) {
     return found;
 }
 
-const srcSource = read("src/host/remote-service.js");
-const srcModule = await import(pathToFileURL(join(ROOT, "src/host/remote-service.js")).href);
-const wires = srcModule.REMOTE_WIRES;
+const srcSource = read("src/host/remote-service.ts");
+const srcModule = await import(pathToFileURL(join(ROOT, "src/host/remote-service.ts")).href);
+const wires = srcModule.REMOTE_WIRES as Record<string, readonly string[]>;
+
+// TS 源文本先剥离类型注解再提取形参名——与 gateway 对运行时源码的
+// `Function.prototype.toString()` 同构：类型注解绝不能混进 wire 形参名。
+const srcRuntimeSource = stripTypeScriptTypes(srcSource);
 
 // 1. 源码形参名 == REMOTE_WIRES。
 for (const [method, expected] of Object.entries(wires)) {
-    const names = parameterNames(srcSource, method);
+    const names = parameterNames(srcRuntimeSource, method);
     const ok = names !== null
         && names.length === expected.length
         && names.every((name, index) => name === expected[index]);
@@ -71,7 +75,7 @@ for (const [method, expected] of Object.entries(wires)) {
 }
 
 // 2. lib 产物：表存活且未漂移 + 形参个数与 wire 个数一致（strict 位置传参）。
-let libSource = null;
+let libSource = "";
 try {
     libSource = read("lib/remote-service.js");
 } catch {
@@ -88,7 +92,7 @@ for (const [method, expected] of Object.entries(wires)) {
 }
 
 // 3. 客户端 args 键必须是 wire 集合的子集（缺省放行，wire 外的键必报 unexpected）。
-for (const file of ["src/client/settings-store.js", "src/client/index.jsx"]) {
+for (const file of ["src/client/settings-store.ts", "src/client/index.tsx"]) {
     for (const [method, occurrences] of callArgumentKeys(read(file))) {
         const expected = wires[method];
         if (expected === undefined) {

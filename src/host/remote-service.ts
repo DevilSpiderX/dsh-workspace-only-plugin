@@ -24,8 +24,12 @@
  *
  * `@deepseek-ai/dsh-typert-protocol` 是刻意不 import 的 —— binding 与描述符的
  * 形状按字面复刻，这样在缺少该包的 composition 上本插件仍可加载。
+ *
+ * TS 约束：类方法的**形参名是 wire 契约的一部分**（见上），类型注解不得改动
+ * 形参名；`REMOTE_WIRES` 保持字符串字面量形态（全压缩产物里原样保留）。
  */
 import {Service} from "@deepseek-ai/cordis";
+import type {Context} from "@deepseek-ai/cordis";
 
 /** Gateway 的 `remoteMethods()` 读取的原型键。 */
 const REMOTE_METHODS_KEY = "@deepseek-ai/dsh-typert-protocol/remote-methods";
@@ -54,18 +58,55 @@ export const REMOTE_WIRES = Object.freeze({
     announce: Object.freeze(["requestId"]),
     decide: Object.freeze(["requestId", "choice"]),
     pendingList: Object.freeze([])
-});
+} as const);
 
 /** 暴露给 `ctx.remote.workspaceOnly.*` / `workspaceOnly/*` RPC 的 Remote 方法名。 */
-export const REMOTE_METHODS = Object.freeze(Object.keys(REMOTE_WIRES));
+export const REMOTE_METHODS: readonly string[] = Object.freeze(Object.keys(REMOTE_WIRES));
+
+/**
+ * 插件交进来的管理表面：对 Config 与会话状态的纯操作。每个钩子都返回普通 JSON。
+ * 参数是 wire 边界上的未校验值，语义校验在 hooks 实现（index）里做。
+ */
+export interface WorkspaceOnlyHooks {
+    /** 当前开关、白名单（含解析后的内置默认白名单）、最近的 ask，以及单个会话的访问档位。 */
+    snapshot(sessionId: string): unknown;
+    /** 设置单个会话的访问档位：`workspace` / `outside-read` / `outside-write`。 */
+    setScope(sessionId: string, scope: string): unknown;
+    /** 持久化一条会话级白名单条目（盖上授权会话的 root；T25 起写会话白名单文件）。 */
+    addAlways(dir: string, sessionId: string | undefined): unknown;
+    /** 持久化一条全局白名单条目（纯字符串；在设置页管理，写 Config）。 */
+    addGlobalAlways(dir: string): unknown;
+    /** 移除一条白名单条目（字符串 = Config；`{ session, dir }` = 会话白名单文件，T25）。 */
+    removeAlways(entry: unknown): unknown;
+    /** 任务 T5：持久化一条永不允许规则（目录前缀或 glob）。 */
+    addDeny(entry: string): unknown;
+    /** 移除一条 deny 规则。 */
+    removeDeny(entry: string): unknown;
+    /** 清空设置页展示的最近 ask 列表。 */
+    clearRecent(): unknown;
+    /** 任务 B：composer 面板报告自己已出现在 `requestId` 对应的屏幕上。 */
+    announce(requestId: string): unknown;
+    /** 任务 B：composer 面板提交 `once` / `always` / `deny`。 */
+    decide(requestId: string, choice: string): unknown;
+    /** 待决的门禁 ask（供设置表面做诊断）。 */
+    pendingList(): unknown;
+}
+
+/** `bindTypertRemote` 产出的冻结 binding（形状按 `dsh-typert-protocol` 字面复刻）。 */
+interface TypertRemoteBinding {
+    readonly service: object;
+    readonly serviceKey: string;
+    readonly namespace: string;
+}
 
 /**
  * 插件交进来的管理表面：对 Config 与会话状态的纯操作。每个钩子都返回普通 JSON。
  */
 const WorkspaceOnlyRemoteService = class extends Service {
-    hooks;
+    hooks: WorkspaceOnlyHooks;
+    declare typertRemote: TypertRemoteBinding;
 
-    constructor(ctx, hooks) {
+    constructor(ctx: Context, hooks: WorkspaceOnlyHooks) {
         super(ctx, REMOTE_SERVICE_KEY);
         this.hooks = hooks;
         // 等价于 `bindTypertRemote(this, key, { namespace })`：Gateway 在每次
@@ -78,57 +119,57 @@ const WorkspaceOnlyRemoteService = class extends Service {
     }
 
     /** 当前开关、白名单（含解析后的内置默认白名单）、最近的 ask，以及单个会话的访问档位。 */
-    async snapshot(sessionId) {
+    async snapshot(sessionId: string): Promise<unknown> {
         return this.hooks.snapshot(sessionId);
     }
 
     /** 设置单个会话的访问档位：`workspace` / `outside-read` / `outside-write`。 */
-    async setScope(sessionId, scope) {
+    async setScope(sessionId: string, scope: string): Promise<unknown> {
         return this.hooks.setScope(sessionId, scope);
     }
 
     /** 持久化一条会话级白名单条目（盖上授权会话的 root；T25 起写会话白名单文件）。 */
-    async addAlways(dir, sessionId) {
+    async addAlways(dir: string, sessionId: string | undefined): Promise<unknown> {
         return this.hooks.addAlways(dir, sessionId);
     }
 
     /** 持久化一条全局白名单条目（纯字符串；在设置页管理，写 Config）。 */
-    async addGlobalAlways(dir) {
+    async addGlobalAlways(dir: string): Promise<unknown> {
         return this.hooks.addGlobalAlways(dir);
     }
 
     /** 移除一条白名单条目（字符串 = Config；`{ session, dir }` = 会话白名单文件，T25）。 */
-    async removeAlways(entry) {
+    async removeAlways(entry: unknown): Promise<unknown> {
         return this.hooks.removeAlways(entry);
     }
 
     /** 任务 T5：持久化一条永不允许规则（目录前缀或 glob）。 */
-    async addDeny(entry) {
+    async addDeny(entry: string): Promise<unknown> {
         return this.hooks.addDeny(entry);
     }
 
     /** 移除一条 deny 规则。 */
-    async removeDeny(entry) {
+    async removeDeny(entry: string): Promise<unknown> {
         return this.hooks.removeDeny(entry);
     }
 
     /** 清空设置页展示的最近 ask 列表。 */
-    async clearRecent() {
+    async clearRecent(): Promise<unknown> {
         return this.hooks.clearRecent();
     }
 
     /** 任务 B：composer 面板报告自己已出现在 `requestId` 对应的屏幕上。 */
-    async announce(requestId) {
+    async announce(requestId: string): Promise<unknown> {
         return this.hooks.announce(requestId);
     }
 
     /** 任务 B：composer 面板提交 `once` / `always` / `deny`。 */
-    async decide(requestId, choice) {
+    async decide(requestId: string, choice: string): Promise<unknown> {
         return this.hooks.decide(requestId, choice);
     }
 
     /** 待决的门禁 ask（供设置表面做诊断）。 */
-    async pendingList() {
+    async pendingList(): Promise<unknown> {
         return this.hooks.pendingList();
     }
 };
@@ -154,7 +195,7 @@ const SRC_JSON_CODEC = Object.freeze({mode: "src-json"});
  * `@deepseek-ai/dsh-typert-protocol` 的 `InvocationDescriptor` 字面复刻。
  * `parameters` 的顺序即类方法的形参顺序（Gateway 按它位置传参）。
  */
-function invocationDescriptors() {
+function invocationDescriptors(): readonly object[] {
     return Object.entries(REMOTE_WIRES).map(([method, wires]) => Object.freeze({
         id: `${REMOTE_PACKAGE}#${REMOTE_NAMESPACE}/${method}`,
         service: REMOTE_SERVICE_KEY,
@@ -171,6 +212,11 @@ function invocationDescriptors() {
     }));
 }
 
+/** typert registry 的最小形状（`@deepseek-ai/dsh-typert-protocol` 刻意不 import）。 */
+interface TypertRegistry {
+    register(contribution: unknown): () => void;
+}
+
 /**
  * 向 typert registry 注册 strict 调用描述符：Gateway 的 `resolveDescriptor`
  * 优先命中 `ctx.typert.local` 的 strict 定义，wire 字段名不再从方法形参名推断。
@@ -181,9 +227,10 @@ function invocationDescriptors() {
  * @param ctx - 宿主上下文。
  * @returns 注册的 disposer（交给 `ctx.effect` 随插件 fiber 释放）；降级时为空函数。
  */
-export function registerRemoteDescriptors(ctx) {
+export function registerRemoteDescriptors(ctx: Context): () => void {
     try {
-        const typert = typeof ctx?.get === "function" ? ctx.get("typert") : void 0;
+        // typert 是可选服务；拿到的形态按最小接口收窄。
+        const typert = (typeof ctx?.get === "function" ? ctx.get("typert") : void 0) as TypertRegistry | undefined;
         if (typert === void 0 || typeof typert.register !== "function") return () => {};
         return typert.register({
             package: REMOTE_PACKAGE,
@@ -202,12 +249,13 @@ export function registerRemoteDescriptors(ctx) {
  * 在宿主上下文上注册 Remote 服务。
  *
  * @param ctx - 宿主上下文。
- * @param hooks - 管理操作（见 {@link WorkspaceOnlyRemoteService}）。
+ * @param hooks - 管理操作（见 {@link WorkspaceOnlyHooks}）。
  * @returns 服务实例；若本 composition 中 Cordis Service 基类不可用则返回 `undefined`
  *   （此时管理 UI 降级为仅设置表单）。
  */
-export function createRemoteService(ctx, hooks) {
-    if (Service === void 0) return void 0;
+export function createRemoteService(ctx: Context, hooks: WorkspaceOnlyHooks): InstanceType<typeof WorkspaceOnlyRemoteService> | undefined {
+    // 缺 Service 基类的 composition 下安全降级（恒真比较在 TS 下不合法，用真值判定）。
+    if (!Service) return void 0;
     try {
         const service = new WorkspaceOnlyRemoteService(ctx, hooks);
         // strict 调用描述符随本服务注册、随插件 fiber 撤回（见文件头 T22 注释）。

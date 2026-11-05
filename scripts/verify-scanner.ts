@@ -1,9 +1,9 @@
 /**
  * 扫描器验证（任务 A）。用合成路径——POSIX 与 Windows 写法都有——对
- * `src/host/scanner.js` 的纯词法门禁做直测，含误报对照组。不需要部署或
+ * `src/host/scanner.ts` 的纯词法门禁做直测，含误报对照组。不需要部署或
  * DSH 运行时：
  *
- *   node scripts/verify-scanner.mjs
+ *   node scripts/verify-scanner.ts
  */
 import {homedir} from "node:os";
 import {join} from "node:path";
@@ -20,7 +20,8 @@ import {
     sensitiveMatch,
     shellReason,
     toolAccessKind
-} from "../src/host/scanner.js";
+} from "../src/host/scanner.ts";
+import type {SensitiveConfig} from "../src/host/scanner.ts";
 
 const posixRoot = "/Volumes/CBR DATA/项目/dsh-workspace-only-plugin";
 const winRoot = "C:\\work\\project";
@@ -29,7 +30,7 @@ const winRoot = "C:\\work\\project";
  * [command, expected, root?] —— expected 为 "FLAG"（门禁触发）或 "OK"（放行）。
  * Windows 用例只使用合成路径。
  */
-const cases = [
+const cases: [string, string, string][] = [
     // --- 既有 POSIX 回归 ---
     ["cat /etc/passwd", "FLAG", posixRoot],
     ["node -e \"console.log(require('fs').readFileSync('/etc/passwd','utf8'))\"", "FLAG", posixRoot],
@@ -109,7 +110,7 @@ const cases = [
 /**
  * [target, root, expectedInside] —— 路径参数的包含判定，含 Windows 大小写不敏感。
  */
-const containment = [
+const containment: [string, string, boolean][] = [
     ["C:\\work\\project\\src", winRoot, true],
     ["c:\\work\\PROJECT\\src\\a.txt", winRoot, true],
     ["src\\a.txt", winRoot, true],
@@ -128,7 +129,7 @@ const containment = [
  * 子目录及其子树才豁免。
  */
 const tempRootWin = "C:\\Users\\me\\AppData\\Local\\Temp";
-const tempExempt = [
+const tempExempt: [string, string, boolean][] = [
     // 运行时自身的溢出/工作目录（含子树）。
     ["C:\\Users\\me\\AppData\\Local\\Temp\\dsh-subprocess-h4mBP1", tempRootWin, true],
     ["C:\\Users\\me\\AppData\\Local\\Temp\\dsh-subprocess-h4mBP1\\dsh-subprocess-1-2-abcdef-stdout.log", tempRootWin, true],
@@ -155,7 +156,7 @@ const tempExempt = [
  * `undefined` 表示不是 home 形态或无法解析：门禁按原样判定，使 home 写法
  * 在外部保持 fail-safe。
  */
-const homeExpand = [
+const homeExpand: [string, Record<string, string | undefined>, string | undefined][] = [
     ["~/x", {HOME: "/home/me"}, "/home/me/x"],
     ["~", {HOME: "/home/me"}, "/home/me"],
     ["~\\x", {USERPROFILE: "C:\\Users\\me"}, "C:\\Users\\me\\x"],
@@ -179,7 +180,7 @@ const homeExpand = [
  * 否则用 `~/.dsh`；join 保留 HOME 自身的分隔符语义，与宿主平台无关。
  */
 const fallbackBuiltin = [join(homedir(), ".dsh", "dsh-runtimes", "dsh-primary-runtime")];
-const builtinCases = [
+const builtinCases: [Record<string, string | undefined>, string[]][] = [
     [{DSH_HOME: "C:\\Users\\me\\.dsh"}, ["C:\\Users\\me\\.dsh\\dsh-runtimes\\dsh-primary-runtime"]],
     [{DSH_HOME: "C:\\Users\\me\\.dsh\\"}, ["C:\\Users\\me\\.dsh\\dsh-runtimes\\dsh-primary-runtime"]],
     [{DSH_HOME: "/home/me/.dsh"}, ["/home/me/.dsh/dsh-runtimes/dsh-primary-runtime"]],
@@ -196,7 +197,7 @@ const builtinCases = [
  * 敏感文件匹配（任务 T4）—— [value, config, expectedMatchedPattern]。
  * 按 basename 匹配；`allowPatterns` 与 `alwaysPatterns` 可豁免。
  */
-const sensitiveCases = [
+const sensitiveCases: [string, SensitiveConfig, string | undefined][] = [
     [".env", {patterns: ["*.env", "*.env.*"], allowPatterns: ["*.env.example"]}, "*.env"],
     ["app.env.local", {patterns: ["*.env", "*.env.*"], allowPatterns: ["*.env.example"]}, "*.env.*"],
     [".env.example", {patterns: ["*.env", "*.env.*"], allowPatterns: ["*.env.example"]}, void 0],
@@ -212,7 +213,7 @@ const sensitiveCases = [
  * 拒绝规则（任务 T5）—— [value, denyList, expectedHitRule]。末尾带分隔符
  * 表示目录前缀包含判定，否则是全路径 glob。
  */
-const denyCases = [
+const denyCases: [string, string[], string | undefined][] = [
     ["C:\\secret\\a.txt", ["C:\\secret\\"], "C:\\secret\\"],
     ["C:\\other\\a.txt", ["C:\\secret\\"], void 0],
     ["/etc/passwd", ["/etc/"], "/etc/"],
@@ -227,7 +228,7 @@ const denyCases = [
  * 通用参数扫描（任务 T8）—— [args, expectedCollectedPaths]。只收集路径形态的
  * 叶子值；纯文本与超长值跳过。
  */
-const genericCases = [
+const genericCases: [Record<string, unknown>, string[]][] = [
     [{file_path: "C:\\outside\\x"}, ["C:\\outside\\x"]],
     [{note: "just some text"}, []],
     [{nested: {deep: {path: "/etc/passwd"}}}, ["/etc/passwd"]],
@@ -241,7 +242,7 @@ const genericCases = [
 /**
  * 工作区范围根匹配（任务 T9）—— [a, b, expectedSame]。
  */
-const sameCases = [
+const sameCases: [string, string, boolean][] = [
     ["C:\\work\\project", "C:\\work\\project", true],
     ["C:\\work\\project", "c:\\work\\PROJECT\\", true],
     ["/home/me/project", "/home/me/project", true],
@@ -252,7 +253,7 @@ const sameCases = [
  * 正则/注释斜杠片段（任务 T15）—— [value, expectedRegexShaped]。
  * 模式文本绝不能触发门禁；UNC 斜杠写法与根 glob 必须触发。
  */
-const slashShapes = [
+const slashShapes: [string, boolean][] = [
     ["//", true],
     ["//|x", true],
     ["//)", true],
@@ -359,7 +360,7 @@ for (const [value, tempRoot, expectExempt] of tempExempt) {
     if (ok) pass += 1;
     console.log(`${ok ? "PASS" : "FAIL"}  pathReason mixed verdicts`);
 }
-for (const [name, expected] of [["read", "read"], ["read_image", "read"], ["glob", "read"], ["grep", "read"], ["write", "write"], ["edit", "write"], ["bash", "write"], ["pwsh", "write"], ["mcp-fs-write", "write"], ["", "write"]]) {
+for (const [name, expected] of [["read", "read"], ["read_image", "read"], ["glob", "read"], ["grep", "read"], ["write", "write"], ["edit", "write"], ["bash", "write"], ["pwsh", "write"], ["mcp-fs-write", "write"], ["", "write"]] as [string, string][]) {
     // toolAccessKind：纯读取器归为 read，写入器以及 shell/未知工具归为 write。
     total += 1;
     const got = toolAccessKind(name);

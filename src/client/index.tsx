@@ -1,32 +1,105 @@
-import {createSnapshotStore} from "./snapshot-store.js";
-import {installStyles} from "./styles.js";
-import {en, zh} from "./locales.js";
-import {WorkspaceOnlySettingsController} from "./settings-store.js";
-import {WorkspaceOnlySection} from "./WorkspaceOnlySection.jsx";
-import {WorkspaceOnlyScopeSelect} from "./WorkspaceOnlyScopeSelect.jsx";
-import {WorkspaceOnlyWhitelistView} from "./WorkspaceOnlyWhitelistView.jsx";
-import {WorkspaceOnlyAskCard} from "./WorkspaceOnlyAskCard.jsx";
-import {WorkspaceOnlyPendingBadge} from "./pending-notice.jsx";
+import {createSnapshotStore} from "./snapshot-store.ts";
+import {installStyles} from "./styles.ts";
+import {en, zh} from "./locales.ts";
+import {WorkspaceOnlySettingsController} from "./settings-store.ts";
+import type {GatewayConnection, RemoteWithSettings, SettingsState} from "./settings-store.ts";
+import {WorkspaceOnlySection} from "./WorkspaceOnlySection.tsx";
+import {WorkspaceOnlyScopeSelect} from "./WorkspaceOnlyScopeSelect.tsx";
+import {WorkspaceOnlyWhitelistView} from "./WorkspaceOnlyWhitelistView.tsx";
+import {WorkspaceOnlyAskCard} from "./WorkspaceOnlyAskCard.tsx";
+import {WorkspaceOnlyPendingBadge} from "./pending-notice.tsx";
+import type {PendingAskView, SubagentAddressLike, TranslateFn} from "./shared.ts";
 
 const inject = ["connection", "slots", "locale", "remote", "remote.settings", "uiSession", "sessions", "uiWorkspace"];
 /** 任务 T16：在 Host 对话框超时之上再加一段宽限，作为卡片自毁兜底。 */
 const SELF_DESTRUCT_GRACE_MS = 15_000;
 
-function apply(ctx) {
+/** ask 载荷的 wire 形状（`settings/document-updated` 的 `ask` 部分，字段未校验）。 */
+interface AskWire {
+    readonly requestId?: unknown;
+    readonly sessionId?: unknown;
+    readonly parentSessionId?: unknown;
+    readonly toolName?: unknown;
+    readonly reason?: unknown;
+    readonly dir?: unknown;
+    readonly sensitive?: unknown;
+}
+
+/** 平台 pending interaction 的最小契约（`registerPendingInteraction` 入参）。 */
+interface PendingInteractionLike {
+    key: string;
+    kind: string;
+    source: string;
+    sessionId: string | undefined;
+    requestId?: string | undefined;
+    toolName?: string | undefined;
+    reason?: string | undefined;
+    dir?: string | undefined;
+    result: Promise<unknown>;
+    answerable: boolean;
+    answer(choice: string): Promise<unknown>;
+}
+
+/** 槽位注册条目的最小契约（多态 entry，未用到的键自由携带）。 */
+interface SlotEntry {
+    name: string;
+    id?: string | undefined;
+    order?: number | undefined;
+    priority?: number | undefined;
+    locale?: string | undefined;
+    label?: (() => string) | undefined;
+    select?: ((input: {sessionId?: unknown; pendingInteraction?: {source?: unknown} | undefined}) => unknown) | undefined;
+    inject?: ((sessionId?: string) => Record<string, unknown>) | undefined;
+    [key: string]: unknown;
+}
+
+/** client ctx 的最小结构面（平台注入的服务，类型在未钉进 devDeps 的包里，按用到的面收窄）。 */
+export interface ClientContext {
+    connection: GatewayConnection;
+    slots: {
+        inject(name: string, register: () => unknown): unknown;
+        register(entry: SlotEntry, component: unknown): unknown;
+    };
+    locale: {
+        register(name: string, dictionaries: {zh: unknown; en: unknown}): unknown;
+        bind(name: string): TranslateFn;
+    };
+    remote: RemoteWithSettings & {
+        $on(event: string, listener: (ns: string, extra: DocumentUpdatedExtra | undefined) => void): () => void;
+    };
+    uiSession: {
+        registerPendingInteraction(precedence: (interaction: {readonly source?: unknown} | undefined) => number): (interaction: PendingInteractionLike, onRemove: () => unknown) => () => void;
+    };
+    sessions?: {
+        subagentAddress?(childSessionId: string): SubagentAddressLike | undefined;
+    } | undefined;
+    uiWorkspace: {
+        openSession(target: string | SubagentAddressLike): unknown;
+    };
+    effect(execute: () => unknown, label?: string): unknown;
+}
+
+/** `settings/document-updated` 的额外载荷（ask / askDone）。 */
+interface DocumentUpdatedExtra {
+    readonly ask?: AskWire | undefined;
+    readonly askDone?: {readonly requestId?: unknown} | undefined;
+}
+
+function apply(ctx: ClientContext): void {
     installStyles(document);
     const controller = new WorkspaceOnlySettingsController(ctx.remote, ctx.connection);
     const load = () => controller.load();
-    const select = (enabled) => controller.select(enabled);
+    const select = (enabled: boolean) => controller.select(enabled);
     const injected = () => ({
         hooks: {workspaceOnly: controller.store},
         load,
         select,
-        addGlobalAlways: (dir) => controller.addGlobalAlways(dir),
-        removeAlways: (entry) => controller.removeAlways(entry),
-        addDeny: (entry) => controller.addDeny(entry),
-        removeDeny: (entry) => controller.removeDeny(entry),
+        addGlobalAlways: (dir: string) => controller.addGlobalAlways(dir),
+        removeAlways: (entry: string) => controller.removeAlways(entry),
+        addDeny: (entry: string) => controller.addDeny(entry),
+        removeDeny: (entry: string) => controller.removeDeny(entry),
         clearRecent: () => controller.clearRecent(),
-        setScope: (sessionId, scope) => controller.setScope(sessionId, scope)
+        setScope: (sessionId: string, scope: string) => controller.setScope(sessionId, scope)
     });
     ctx.effect(() => ctx.locale.register("settings.workspaceOnly", {
         zh,
@@ -55,7 +128,7 @@ function apply(ctx) {
             hooks: {workspaceOnly: controller.store},
             sessionId,
             load,
-            setScope: (scope) => controller.setScope(sessionId, scope)
+            setScope: (scope: string) => controller.setScope(sessionId as string, scope)
         })
     }, WorkspaceOnlyScopeSelect));
     // 会话页视图：当前工作区根目录的会话级白名单
@@ -70,13 +143,13 @@ function apply(ctx) {
             hooks: {workspaceOnly: controller.store},
             sessionId,
             load,
-            addEntry: (dir) => controller.allowAlways(dir, sessionId),
-            removeEntry: (entry) => controller.removeAlways(entry)
+            addEntry: (dir: string) => controller.allowAlways(dir, sessionId),
+            removeEntry: (entry: unknown) => controller.removeAlways(entry)
         })
     }, WorkspaceOnlyWhitelistView));
     // 任务 B 的三键面板：在 composer 里落座一个 pending ask，
     // 与平台的权限升权接管完全同款。T21：影子黄点与卡片共用这一个
-    // pending 域，precedence 按 `source` 区分——卡片 0、影子 -1（平台赢家
+    // pending 域，precedence 按 `source` 动态给分——卡片 0、影子 -1（平台赢家
     // 规则 `precedence >= previous` 后到赢，卡片与官方审批卡永远压过影子，
     // 绝不遮蔽真实卡片）。曾为影子单独注册第二个域，与首版黄点全部失效
     // （卡片/徽章/黄点一齐消失）的时间点吻合，合并进单域后不再有该风险面。
@@ -84,24 +157,24 @@ function apply(ctx) {
     // 任务 T12：按 requestId 记录在场的卡片。重复投递的 ask 负载绝不能
     // 二次落座——平台域对重复 key 会抛错，多余的席位卡片永远关不掉
     //（「卡片点了不关」的根因）。
-    const seats = new Map();
+    const seats = new Map<string, () => void>();
     // 任务 T13：提示面 store。`pendingStore` 镜像在场席位、供标题栏徽章使用。
     // 用对象包裹，让 `update` 的浅草稿 mutator 保持安全（裸数组状态会被展开
     // 成对象、丢掉 Array.prototype）。T19：toast 提示面已整体移除——它的文案
     // 会把主会话自己的 ask 误报成「子代理请求」，且卡片就在 composer 里；
     // 子代理 ask 改由父会话行的「待审批」黄点提示（下面的影子 pending 投影）。
-    const pendingStore = createSnapshotStore({entries: []});
+    const pendingStore = createSnapshotStore<{entries: PendingAskView[]}>({entries: []});
     // T19：父会话行的「待审批」黄点。子代理的三键卡片在子代理自己的 composer
     // 里，父视图与会话行都看不见它。这个影子 pending 投影把平台的 warning
     // 状态点（行尾「待审批」标签）挂到父会话的会话行上。影子走卡片同一个
     // pending 域（precedence -1，见上），不设 `source: "workspace-only"`、
     // 也不是官方 PendingApproval 实例，composer 渲染链无人认领它，因此不会
     // 渲染出任何卡片。delegate 空转：影子不承载决策，插件卸载不影响 ask 裁决。
-    const rowNotices = new Map();
-    const raiseRowNotice = (requestId, parentSessionId) => {
+    const rowNotices = new Map<string, () => void>();
+    const raiseRowNotice = (requestId: string, parentSessionId: string | null): void => {
         if (typeof parentSessionId !== "string" || parentSessionId === "") return;
         if (rowNotices.has(requestId)) return;
-        let remove = () => {
+        let remove = (): void => {
         };
         try {
             remove = registerPendingInteraction({
@@ -120,7 +193,7 @@ function apply(ctx) {
         }
         rowNotices.set(requestId, remove);
     };
-    const dropRowNotice = (requestId) => {
+    const dropRowNotice = (requestId: string): void => {
         const remove = rowNotices.get(requestId);
         if (remove === void 0) return;
         rowNotices.delete(requestId);
@@ -130,9 +203,10 @@ function apply(ctx) {
             // 平台已经撤过了。
         }
     };
-    const raisePanel = (ask) => {
+    const raisePanel = (ask: AskWire | undefined): void => {
         if (ask === null || ask === void 0 || typeof ask.requestId !== "string") return;
-        if (seats.has(ask.requestId)) return;
+        const requestId: string = ask.requestId;
+        if (seats.has(requestId)) return;
         // 形状对齐平台的 PendingApproval 契约：composer 的 pending-interaction
         // 投影是按 session 的，渲染按 `kind`/`key`/`sessionId`/`result` 匹配。
         // `kind: "approval"` 借用了侧边栏的可见 pending 白名单
@@ -143,31 +217,31 @@ function apply(ctx) {
         // 官方组件（已在 DSH 0.2.1-rc.2 验证；若未来版本改按 `kind` 字符串
         // 选举就会冲突，必须回头复查）。`source` 是反向保护：我们的选择器
         // 绝不能认领官方的 PendingApproval，它的 `kind` 同样是 "approval"。
-        const completion = Promise.withResolvers();
+        const completion = Promise.withResolvers<unknown>();
         let settled = false;
-        let remove = () => {
+        let remove = (): void => {
         };
-        let selfDestruct = 0;
+        let selfDestruct: ReturnType<typeof setTimeout> | undefined;
         // 唯一的幂等撤座路径。点击结算和 Host 侧 dismiss 必须同步清掉
         // 提示 store——只靠 `completion.promise.then` 清理，就会在所有卡片
         // 都批完后留下过期的徽章条目（「徽章还显示 3」）。下面的 microtask
         // 只是双保险重跑一遍，并撤掉 composer 席位。
-        const cleanup = () => {
-            seats.delete(ask.requestId);
+        const cleanup = (): void => {
+            seats.delete(requestId);
             clearTimeout(selfDestruct);
             // T19：黄点的清理同样必须在结算同步路径做——只挂 `then` 会让
             // 全部审批后父会话行仍残留「待审批」。
-            dropRowNotice(ask.requestId);
+            dropRowNotice(requestId);
             pendingStore.update((state) => {
-                state.entries = state.entries.filter((entry) => entry.requestId !== ask.requestId);
+                state.entries = state.entries.filter((entry) => entry.requestId !== requestId);
             });
         };
-        const settle = (choice) => {
+        const settle = (choice: string): Promise<unknown> => {
             if (settled) return Promise.resolve();
             settled = true;
             cleanup();
             completion.resolve(choice);
-            return controller.call("decide", {requestId: ask.requestId, choice}).catch((error) => {
+            return controller.call("decide", {requestId, choice}).catch((error: unknown) => {
                 console.warn("[workspace-only] decide RPC failed:", error);
                 throw error;
             });
@@ -175,20 +249,20 @@ function apply(ctx) {
         // 任务 T12：不带裁决地撤座——Host 已经结掉这个 ask 了
         //（对话框超时、批量放行、或另一个客户端的点击），不欠 decide RPC，
         // 过期卡片必须撤掉。
-        const dismiss = () => {
+        const dismiss = (): void => {
             if (settled) return;
             settled = true;
             cleanup();
             completion.resolve("deny");
         };
-        const pending = {
+        const pending: PendingInteractionLike = {
             kind: "approval",
             source: "workspace-only",
-            key: ask.requestId,
+            key: requestId,
             // 卡片的 presence 握手会把这个 id 报回 Host；没有它 announce()
             // 无法匹配这个 ask，Host 会退回到通用问答（双弹窗）。
-            requestId: ask.requestId,
-            sessionId: ask.sessionId,
+            requestId,
+            sessionId: typeof ask.sessionId === "string" ? ask.sessionId : void 0,
             toolName: String(ask.toolName ?? "tool"),
             reason: String(ask.reason ?? ""),
             dir: String(ask.dir ?? ""),
@@ -196,7 +270,7 @@ function apply(ctx) {
             get answerable() {
                 return !settled;
             },
-            answer: (choice) => settle(choice)
+            answer: (choice: string) => settle(choice)
         };
         // 平台的 answerApproval 模式：registerPendingInteraction 返回席位的
         // remove()，结果结算后必须移除席位——否则即使做了裁决卡片也永远
@@ -218,22 +292,22 @@ function apply(ctx) {
                 // Host 侧超时反正也会结掉这个 ask。
             }
         });
-        seats.set(ask.requestId, dismiss);
+        seats.set(requestId, dismiss);
         // 任务 T16：双保险自毁。Host 的 `askDone` 可能丢（通知丢失、重连
         // 竞态），过期卡片就会永远赖在 composer 里。Host 在自己的对话框
         // 超时时会结掉 ask，且拒绝永远 fail-closed，所以迟到的本地 dismiss
         // 不会改变裁决——它只是把卡片撤掉。从管理快照读取 Host 的截止时间。
         const deadline = controller.store.getSnapshot().dialogTimeoutMs;
         selfDestruct = setTimeout(() => {
-            seats.get(ask.requestId)?.();
+            seats.get(requestId)?.();
         }, (Number.isSafeInteger(deadline) && deadline >= 1 ? deadline : 120_000) + SELF_DESTRUCT_GRACE_MS);
         // T13：为标题栏徽章镜像席位。上面的 `seats` 去重保证每个 requestId
         // 只出现一次。T19：toast 已移除；子代理 ask 在父会话行挂「待审批」
         // 黄点（影子 pending 投影）——主会话自己的 ask 不需要提示，卡片就在
         // composer 里，且平台的行黄点早已随卡片投影亮起。
-        const notice = {
-            requestId: ask.requestId,
-            sessionId: ask.sessionId,
+        const notice: PendingAskView = {
+            requestId,
+            sessionId: typeof ask.sessionId === "string" ? ask.sessionId : void 0,
             parentSessionId: typeof ask.parentSessionId === "string" && ask.parentSessionId !== "" ? ask.parentSessionId : null,
             toolName: String(ask.toolName ?? "tool"),
             dir: String(ask.dir ?? "")
@@ -241,16 +315,16 @@ function apply(ctx) {
         pendingStore.update((state) => {
             state.entries = [...state.entries, notice];
         });
-        raiseRowNotice(ask.requestId, notice.parentSessionId);
+        raiseRowNotice(requestId, notice.parentSessionId);
         // Presence：这个 handler 能跑起来本身就证明 Web 客户端在场。
         // 立刻 announce，而不是等 React 挂载卡片，这样 Host 的 presence
         // 窗口绝不会输给渲染周期；卡片自己的 announce 保留为幂等的第二次
         // 机会。任务 T16：Host 在不再认识这个 ask 时（已经结掉了）会答
         // `{ ok: false }`——迟到的卡片必须立刻撤掉，而不是等一个在席位
         // 出现之前就已广播的 `askDone`。
-        controller.call("announce", {requestId: ask.requestId}).then((result) => {
-            if (result?.ok === false) dismiss();
-        }, (error) => {
+        controller.call("announce", {requestId}).then((result: unknown) => {
+            if ((result as {ok?: unknown} | null)?.ok === false) dismiss();
+        }, (error: unknown) => {
             console.warn("[workspace-only] announce RPC failed:", error);
         });
     };
@@ -259,7 +333,7 @@ function apply(ctx) {
     // 别让过期席位赖在 composer 里。`seats` 存的是 dismiss 函数本体，
     // 直接调用它（曾经误写 `?.dismiss()`——TypeError 会把撤卡整个炸掉，
     // 黄点与卡片都残留）。
-    const closePanel = (done) => {
+    const closePanel = (done: {readonly requestId?: unknown} | undefined): void => {
         if (done === null || done === void 0 || typeof done.requestId !== "string") return;
         seats.get(done.requestId)?.();
     };
@@ -276,10 +350,10 @@ function apply(ctx) {
             // 绝不会干等一个从未渲染出来的面板。与 raisePanel 里的到达
             // announce 幂等。任务 T16：`{ ok: false }` 表示 Host 已经结掉
             // 这个 ask——撤掉迟到卡片，别让它永远占着席位。
-            announce: (requestId) => {
-                controller.call("announce", {requestId}).then((result) => {
-                    if (result?.ok === false) seats.get(requestId)?.();
-                }, (error) => {
+            announce: (requestId: string) => {
+                controller.call("announce", {requestId}).then((result: unknown) => {
+                    if ((result as {ok?: unknown} | null)?.ok === false) seats.get(requestId)?.();
+                }, (error: unknown) => {
                     console.warn("[workspace-only] announce RPC failed:", error);
                 });
             }
@@ -301,7 +375,7 @@ function apply(ctx) {
         inject: (sessionId) => ({
             hooks: {pending: pendingStore},
             sessionId,
-            openPending: (target) => {
+            openPending: (target: string | SubagentAddressLike) => {
                 // 负载畸形时 fail-closed：不导航。
                 if (typeof target === "string") {
                     if (target.length > 0) ctx.uiWorkspace.openSession(target);
@@ -316,7 +390,7 @@ function apply(ctx) {
         })
     }, WorkspaceOnlyPendingBadge));
     ctx.effect(() => {
-        const refresh = () => {
+        const refresh = (): void => {
             controller.load();
         };
         const disposers = [ctx.remote.$on("settings/document-updated", (ns, extra) => {

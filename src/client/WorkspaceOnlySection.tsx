@@ -1,8 +1,24 @@
 import {useEffect, useState} from "react";
+import type {ChangeEvent, JSX, KeyboardEvent} from "react";
 import {Button, Input} from "@deepseek-ai/dsh-client-ui-primitives";
-import {globalEntries, SCOPE_OPTIONS} from "./shared.js";
+import {globalEntries, SCOPE_OPTIONS} from "./shared.ts";
+import type {TranslateFn} from "./shared.ts";
+import type {SettingsState} from "./settings-store.ts";
 import css from "./WorkspaceOnlySection.module.css";
 import entryRowCss from "./entryRow.module.css";
+
+export interface SectionProps {
+    load: () => unknown;
+    select: (enabled: boolean) => unknown;
+    addGlobalAlways: (dir: string) => unknown;
+    removeAlways: (entry: string) => unknown;
+    addDeny: (entry: string) => unknown;
+    removeDeny: (entry: string) => unknown;
+    clearRecent: () => unknown;
+    setScope: (sessionId: string, scope: string) => unknown;
+    useWorkspaceOnly: (selector: (snapshot: SettingsState) => SettingsState) => SettingsState;
+    t: TranslateFn;
+}
 
 /**
  * 设置分区页（独立导航项，`settings.section`）：全局开关、全局总是
@@ -21,8 +37,8 @@ export function WorkspaceOnlySection(
         setScope,
         useWorkspaceOnly,
         t
-    }
-) {
+    }: SectionProps
+): JSX.Element | null {
     const state = useWorkspaceOnly((snapshot) => snapshot);
     const [denyDraft, setDenyDraft] = useState("");
     const [allowDraft, setAllowDraft] = useState("");
@@ -40,8 +56,8 @@ export function WorkspaceOnlySection(
     const deny = state.deny ?? [];
     const recent = state.recent ?? [];
     const sessions = state.sessions ?? [];
-    const widened = sessions.filter((session) => session.scope !== void 0 && session.scope !== "workspace");
-    const scopeLabel = (scope) => {
+    const widened = sessions.filter((session) => session.scope !== "workspace");
+    const scopeLabel = (scope: string): string => {
         const option = SCOPE_OPTIONS.find((item) => item.id === scope);
         return option === void 0 ? String(scope) : t(option.labelKey);
     };
@@ -97,10 +113,10 @@ export function WorkspaceOnlySection(
                             value={allowDraft}
                             placeholder={t("always.placeholder")}
                             disabled={busy}
-                            onChange={(event) => {
+                            onChange={(event: ChangeEvent<HTMLInputElement>) => {
                                 setAllowDraft(event.target.value);
                             }}
-                            onKeyDown={(event) => {
+                            onKeyDown={(event: KeyboardEvent<HTMLInputElement>) => {
                                 if (event.key !== "Enter" || event.nativeEvent.isComposing || event.keyCode === 229) return;
                                 const entry = allowDraft.trim();
                                 if (entry !== "") {
@@ -150,10 +166,10 @@ export function WorkspaceOnlySection(
                             value={denyDraft}
                             placeholder={t("deny.placeholder")}
                             disabled={busy}
-                            onChange={(event) => {
+                            onChange={(event: ChangeEvent<HTMLInputElement>) => {
                                 setDenyDraft(event.target.value);
                             }}
-                            onKeyDown={(event) => {
+                            onKeyDown={(event: KeyboardEvent<HTMLInputElement>) => {
                                 if (event.key !== "Enter" || event.nativeEvent.isComposing || event.keyCode === 229) return;
                                 const entry = denyDraft.trim();
                                 if (entry !== "") {

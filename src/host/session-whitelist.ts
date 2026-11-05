@@ -15,7 +15,7 @@
 import {readdirSync, readFileSync} from "node:fs";
 import {mkdir, writeFile} from "node:fs/promises";
 import {dirname, join} from "node:path";
-import {resolveDshHome} from "./scanner.js";
+import {resolveDshHome} from "./scanner.ts";
 
 /** 文件布局常量。 */
 const PLUGIN_DIR = "dsh-workspace-only-plugin";
@@ -23,12 +23,18 @@ const SESSIONS_DIR = "sessions";
 const WHITELIST_FILE = "whitelist.json";
 const WHITELIST_VERSION = 1;
 
+/** 一条会话级白名单条目（管理快照形状）。 */
+export interface SessionDirEntry {
+    readonly session: string;
+    readonly dir: string;
+}
+
 /**
  * 会话 id 允许当目录名的判定：非空、不是 `.`/`..`，且不含路径分隔符、
  * 盘符冒义与 Windows 非法文件名字符、控制字符。id 由平台产生（uuid/短 id
  * 形态），这里只挡路径逃逸与跨平台非法名，不设白名单以免误拒真实 id。
  */
-function isSafeSessionId(rootId) {
+function isSafeSessionId(rootId: string | undefined): rootId is string {
     if (typeof rootId !== "string" || rootId === "" || rootId === "." || rootId === "..") return false;
     // 路径分隔符、盘符冒义、Windows 非法文件名字符与控制字符。
     return !/[\\/:*?"<>|\u0000-\u001f]/.test(rootId);
@@ -39,22 +45,22 @@ function isSafeSessionId(rootId) {
  * 同源（`resolveDshHome`，每次实时解析）；后续拼接是真实 fs 路径，按宿主
  * `path` 语义（开发机 Windows 上与 home 形态一致）。
  */
-function sessionsRoot() {
+function sessionsRoot(): string {
     return join(resolveDshHome(), PLUGIN_DIR, SESSIONS_DIR);
 }
 
 /** 单个会话的 `whitelist.json` 路径；id 不合法返回 `undefined`。 */
-export function whitelistPathOf(rootId) {
+export function whitelistPathOf(rootId: string | undefined): string | undefined {
     if (!isSafeSessionId(rootId)) return void 0;
     return join(sessionsRoot(), rootId, WHITELIST_FILE);
 }
 
 /** 宽松解析文件内容：只认 `{ dirs: string[] }`，其余形状一律按空处理。 */
-function parseWhitelist(text) {
+function parseWhitelist(text: string): string[] {
     try {
-        const parsed = JSON.parse(text);
-        const dirs = parsed !== null && typeof parsed === "object" ? parsed.dirs : void 0;
-        return Array.isArray(dirs) ? dirs.filter((dir) => typeof dir === "string" && dir !== "") : [];
+        const parsed: unknown = JSON.parse(text);
+        const dirs = parsed !== null && typeof parsed === "object" ? (parsed as {dirs?: unknown}).dirs : void 0;
+        return Array.isArray(dirs) ? dirs.filter((dir): dir is string => typeof dir === "string" && dir !== "") : [];
     } catch {
         return [];
     }
@@ -65,7 +71,7 @@ function parseWhitelist(text) {
  * （fail-closed：条目丢了只会多问，不会少问）。门禁路径每次判定实时读，
  * 因此手工编辑的文件立即生效。
  */
-export function readSessionDirs(rootId) {
+export function readSessionDirs(rootId: string | undefined): string[] {
     const path = whitelistPathOf(rootId);
     if (path === void 0) return [];
     try {
@@ -79,14 +85,14 @@ export function readSessionDirs(rootId) {
  * 扫描全部会话的白名单条目（`[{session, dir}]`），供管理快照全量展示。
  * `sessions/` 目录不存在或不可读时返回 `[]`。
  */
-export function readAllSessionEntries() {
+export function readAllSessionEntries(): SessionDirEntry[] {
     let dirents;
     try {
         dirents = readdirSync(sessionsRoot(), {withFileTypes: true});
     } catch {
         return [];
     }
-    const entries = [];
+    const entries: SessionDirEntry[] = [];
     for (const dirent of dirents) {
         if (!dirent.isDirectory()) continue;
         const rootId = dirent.name;
@@ -97,9 +103,9 @@ export function readAllSessionEntries() {
 }
 
 /** 每会话一条写链：同会话的读改写串行，防并发授权互相覆盖。 */
-const writeChains = new Map();
+const writeChains = new Map<string, Promise<void>>();
 
-function serialized(rootId, task) {
+function serialized<T>(rootId: string, task: () => Promise<T>): Promise<T> {
     const previous = writeChains.get(rootId) ?? Promise.resolve();
     const run = previous.then(task, task);
     const kept = run.then(() => void 0, () => void 0);
@@ -111,7 +117,7 @@ function serialized(rootId, task) {
 }
 
 /** 写回整份目录列表（在 {@link serialized} 任务里调用）。 */
-async function writeDirs(rootId, dirs) {
+async function writeDirs(rootId: string, dirs: readonly string[]): Promise<void> {
     const path = whitelistPathOf(rootId);
     if (path === void 0) throw new Error(`[workspace-only] unsafe session id for whitelist file: ${rootId}`);
     await mkdir(dirname(path), {recursive: true});
@@ -125,7 +131,7 @@ async function writeDirs(rootId, dirs) {
  *
  * @returns 写入后的目录列表。
  */
-export function addSessionDir(rootId, dir) {
+export function addSessionDir(rootId: string, dir: string): Promise<string[]> {
     return serialized(rootId, async () => {
         const next = [...new Set([...readSessionDirs(rootId), dir])];
         await writeDirs(rootId, next);
@@ -138,7 +144,7 @@ export function addSessionDir(rootId, dir) {
  *
  * @returns 移除后的目录列表。
  */
-export function removeSessionDir(rootId, dir) {
+export function removeSessionDir(rootId: string, dir: string): Promise<string[]> {
     return serialized(rootId, async () => {
         const next = readSessionDirs(rootId).filter((item) => item !== dir);
         await writeDirs(rootId, next);
@@ -151,7 +157,7 @@ export function removeSessionDir(rootId, dir) {
  *
  * @returns 合并后的目录列表。
  */
-export function mergeSessionDirs(rootId, dirs) {
+export function mergeSessionDirs(rootId: string, dirs: readonly string[]): Promise<string[]> {
     return serialized(rootId, async () => {
         const next = [...new Set([...readSessionDirs(rootId), ...dirs])];
         await writeDirs(rootId, next);

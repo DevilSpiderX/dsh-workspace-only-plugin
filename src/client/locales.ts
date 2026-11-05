@@ -45,7 +45,11 @@ export const zh = {
     "pending.badge": "待审批 {n}",
     "pending.tip": "Workspace Only：{n} 个子代理的访问请求等待确认，点击查看"
 };
-export const en = {
+
+/** 文案字典形状（zh 为键集真源；en 漏键/多键在编译期报错）。 */
+export type WorkspaceOnlyDictionary = Readonly<Record<keyof typeof zh, string>>;
+
+export const en: WorkspaceOnlyDictionary = {
     "title": "Workspace Only",
     "description": "When on, agent file access in every mode is confined to the current workspace",
     "loading": "Loading",

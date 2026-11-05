@@ -11,14 +11,23 @@
  */
 import {randomUUID} from "node:crypto";
 import {ApprovalRequestId} from "@deepseek-ai/dsh-user-approval";
+import type {ApprovalOutcome, ApprovalRequestEvent} from "@deepseek-ai/dsh-user-approval/types";
 import {scopeTarget} from "@deepseek-ai/dsh-scope";
+import type {Scoped} from "@deepseek-ai/dsh-scope";
+import type {Context} from "@deepseek-ai/cordis";
+import type {Session} from "@deepseek-ai/dsh-session";
 
 /** 闭合的结果词表，从 `dsh-user-approval` 镜像而来。 */
-export const APPROVAL_OUTCOMES = ["allowed-once", "rejected", "cancelled", "unavailable"];
+export const APPROVAL_OUTCOMES: readonly ApprovalOutcome[] = ["allowed-once", "rejected", "cancelled", "unavailable"];
+
+/** 当值在闭合结果词表内时收窄为 {@link ApprovalOutcome}。 */
+function isApprovalOutcome(value: unknown): value is ApprovalOutcome {
+    return typeof value === "string" && (APPROVAL_OUTCOMES as readonly string[]).includes(value);
+}
 
 /** 将答题方的返回值归一化到闭合结果词表。 */
-export function normalizeOutcome(value) {
-    return APPROVAL_OUTCOMES.includes(value) ? value : "unavailable";
+export function normalizeOutcome(value: unknown): ApprovalOutcome {
+    return isApprovalOutcome(value) ? value : "unavailable";
 }
 
 /**
@@ -29,7 +38,7 @@ export function normalizeOutcome(value) {
  * @param request - `{ agent, toolName, callId?, reason, signal? }`。
  * @param session - 审计事件对所属的会话。
  */
-export async function requestApprovalViaWaterfall(ctx, request, session) {
+export async function requestApprovalViaWaterfall(ctx: Context, request: ApprovalRequestEvent, session: Session): Promise<ApprovalOutcome> {
     const {agent, toolName, callId, reason, signal} = request;
     const id = ApprovalRequestId(randomUUID());
     session.append("approval/asked", {
@@ -39,7 +48,10 @@ export async function requestApprovalViaWaterfall(ctx, request, session) {
         ...reason !== void 0 ? {reason} : {}
     });
     const outcome = normalizeOutcome(await ctx.waterfall(
-        scopeTarget(ctx, agent),
+        // `scopeTarget` 的返回品牌（Scoped<Context>）与 waterfall 的 thisArg 品牌
+        //（Scoped<Agent>）在 dsh 类型里不互通；运行时这里就是 agent 作用域的路由
+        // receiver，断言收窄到事件声明的 this 类型。
+        scopeTarget(ctx, agent) as unknown as Scoped<ApprovalRequestEvent["agent"]>,
         "approval/request",
         {
             agent,
@@ -48,7 +60,7 @@ export async function requestApprovalViaWaterfall(ctx, request, session) {
             reason,
             ...signal !== void 0 ? {signal} : {}
         },
-        () => Promise.resolve("unavailable")
+        (): Promise<ApprovalOutcome> => Promise.resolve("unavailable")
     ));
     session.append("approval/decided", {id, outcome});
     return outcome;

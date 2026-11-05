@@ -1,21 +1,21 @@
 import path from "node:path";
 import {defineConfig} from "vite";
+import type {Plugin} from "vite";
 
 /**
  * DSH 加载器只吃单文件 JS，样式不能落盘成 .css 产物：把 vite 从
  * `*.module.css` 提取出来的 css asset 拼接注入 styles.js 的占位符
  *（`__WORKSPACE_ONLY_CSS__`），再把 asset 从产物里删除。generateBundle
  * 跑在 minify 之后——注入的 CSS 文本不再经过 oxc 重打，字面量原样保留。
- * @type {{name: string, generateBundle(*, *): void}}
  */
-const inlineCssAsset = {
+const inlineCssAsset: Plugin = {
     name: "inline-css-asset",
     // order: "post"：vite 的 css-post 插件在普通 generateBundle 之后才把
     // css asset 放进 bundle（实测普通时机只见 chunk），必须后置才看得到。
     generateBundle: {
         order: "post",
         handler(_options, bundle) {
-            const sheets = [];
+            const sheets: string[] = [];
             for (const [fileName, output] of Object.entries(bundle)) {
                 if (output.type !== "asset" || !fileName.endsWith(".css")) continue;
                 sheets.push(typeof output.source === "string" ? output.source : Buffer.from(output.source).toString("utf8"));
@@ -54,7 +54,7 @@ export default defineConfig({
         cssMinify: true, // CSS 也剥注释压空白。
         target: "esnext",
         lib: {
-            entry: "src/client/index.jsx",
+            entry: "src/client/index.tsx",
             formats: ["cjs"], // 主体是 require(...)/exports.xxx = ...，匹配 factory 签名。
             fileName: () => "client.js" // "type": "module" 的包会默认产出 .cjs；这里锁死 .js。
         },

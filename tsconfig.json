@@ -1,0 +1,19 @@
+{
+    "compilerOptions": {
+        "target": "ESNext",
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "lib": ["ESNext", "DOM", "DOM.Iterable"],
+        "jsx": "react-jsx",
+        "types": ["node"],
+        "strict": true,
+        "noImplicitOverride": true,
+        "isolatedModules": true,
+        "verbatimModuleSyntax": true,
+        "allowImportingTsExtensions": true,
+        "noEmit": true,
+        "skipLibCheck": true,
+        "forceConsistentCasingInFileNames": true
+    },
+    "include": ["src", "scripts", "vite.host.config.ts", "vite.client.config.ts"]
+}

@@ -1,7 +1,7 @@
 /**
  * 升级自检（任务 E3）。每次 dsh 升级后运行一次：
  *
- *   node scripts/check-compat.mjs [--asar <path/to/app.asar>]
+ *   node scripts/check-compat.ts [--asar <path/to/app.asar>]
  *
  * 对正在运行的 dsh 安装探测本插件依赖的确切契约，一旦发现漂移就打印可读的
  * 差异报告——绝不静默放过。探测来源按顺序为：profile node_modules
@@ -26,17 +26,17 @@ import {closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, st
 import {homedir} from "node:os";
 import {join} from "node:path";
 
-const failures = [];
-const passes = [];
+const failures: Array<{title: string; detail: string | undefined}> = [];
+const passes: string[] = [];
 
-function record(ok, title, detail) {
+function record(ok: boolean, title: string, detail?: string | undefined): void {
     if (ok) passes.push(title);
     else failures.push({title, detail});
 }
 
 /** 最小 asar 读取器：返回 `path/in/asar` 处的文件文本，找不到则返回 undefined。 */
-function readAsar(asarPath, entry) {
-    let handle;
+function readAsar(asarPath: string, entry: string): string | undefined {
+    let handle: number | undefined;
     try {
         handle = openSync(asarPath, "r");
     } catch {
@@ -51,14 +51,14 @@ function readAsar(asarPath, entry) {
         const stringSize = header.readUInt32LE(4);
         const index = JSON.parse(header.toString("utf8", 8, 8 + stringSize));
         const dataStart = 8 + headerSize;
-        let node = index;
+        let node: unknown = index;
         for (const part of entry.split("/")) {
-            node = (node.files ?? {})[part];
+            node = ((node as {files?: Record<string, unknown>}).files ?? {})[part];
             if (node === void 0) return void 0;
         }
-        if (node.files !== void 0) return void 0;
-        const offset = dataStart + Number(node.offset);
-        const size = Number(node.size);
+        if ((node as {files?: unknown}).files !== void 0) return void 0;
+        const offset = dataStart + Number((node as {offset?: unknown}).offset);
+        const size = Number((node as {size?: unknown}).size);
         const body = Buffer.alloc(size);
         readSync(handle, body, 0, size, offset);
         return body.toString("utf8");
@@ -69,9 +69,15 @@ function readAsar(asarPath, entry) {
     }
 }
 
+/** 一个候选源根（asar 归档或 node_modules 目录）。 */
+interface SourceRoot {
+    kind: "asar" | "dir";
+    base: string;
+}
+
 /** 可解析 `@deepseek-ai/<pkg>` 源码的候选根目录。 */
-function candidateRoots() {
-    const roots = [];
+function candidateRoots(): SourceRoot[] {
+    const roots: SourceRoot[] = [];
     const asarArg = process.argv.indexOf("--asar");
     const explicit = asarArg >= 0 ? process.argv[asarArg + 1] : void 0;
     const asars = [
@@ -85,7 +91,7 @@ function candidateRoots() {
         "D:\\Programs\\DeepSeek Harness\\resources\\app.asar",
         "E:\\Programs\\DeepSeek Harness\\resources\\app.asar",
         "/Applications/DeepSeek Harness.app/Contents/Resources/app.asar"
-    ].filter((value) => typeof value === "string" && value !== "");
+    ].filter((value): value is string => typeof value === "string" && value !== "");
     for (const asar of asars) if (existsSync(asar)) roots.push({kind: "asar", base: asar});
     const dshHome = process.env.DSH_HOME ?? join(homedir(), ".dsh");
     const profiles = join(dshHome, "profiles");
@@ -98,8 +104,14 @@ function candidateRoots() {
     return roots;
 }
 
+/** 定位到的打包源文件。 */
+interface Located {
+    text: string;
+    origin: string;
+}
+
 /** 在所有候选根目录中定位一个打包的源文件。 */
-function locate(pkg, file, roots) {
+function locate(pkg: string, file: string, roots: SourceRoot[]): Located | undefined {
     for (const root of roots) {
         const entry = `dsh/node_modules/@deepseek-ai/${pkg}/${file}`;
         if (root.kind === "asar") {
@@ -113,7 +125,7 @@ function locate(pkg, file, roots) {
     return void 0;
 }
 
-function main() {
+function main(): void {
     const roots = candidateRoots();
     if (roots.length === 0) {
         console.error("check-compat: no dsh installation found — pass --asar <path/to/app.asar> or set DSH_HOME/DSH_ASAR");
@@ -182,7 +194,7 @@ function main() {
         if (found === void 0) {
             record(false, "dsh-api-remotes present", "forwarded-event allowlist not found — client question/answer routing cannot be verified");
         } else {
-            const has = (names) => names.some((needle) => found.text.includes(needle));
+            const has = (names: readonly string[]): boolean => names.some((needle) => found.text.includes(needle));
             const ok = has(["'approval/request'", '"approval/request"']) && has(["'user-questions/request'", '"user-questions/request"']);
             record(ok, "forwarded-event allowlist", ok ? void 0 : `approval/request or user-questions/request dropped from the allowlist in ${found.origin}; host→client asking breaks`);
         }
@@ -204,7 +216,7 @@ function main() {
     //    插件激活被拒。
     {
         const baselineOwners = ["dsh-client-ui-layout", "dsh-client-ui-chat", "dsh-client-locale", "dsh-client-ui-conversation"];
-        const baseline = new Set();
+        const baseline = new Set<string>();
         for (const pkg of baselineOwners) {
             const found = locate(pkg, "lib/client.js", roots);
             if (found === void 0) continue;
@@ -252,7 +264,7 @@ function main() {
     {
         const conversation = locate("dsh-client-ui-conversation", "lib/client.js", roots);
         const workspace = locate("dsh-client-ui-workspace", "lib/client.js", roots);
-        const checks = [
+        const checks: Array<[found: Located | undefined, needle: string, why: string]> = [
             [conversation, "conversation.session.header.actions", "the header badge seat is gone — the T13 badge registration in lib/client.js must be revisited"],
             [workspace, "openSession", "uiWorkspace.openSession is gone — the T13 badge click-through must be revisited"]
         ];
@@ -286,7 +298,7 @@ function main() {
     }
     console.log(`${passes.length}/${passes.length + failures.length} probes passed`);
     if (failures.length > 0) {
-        console.log("check-compat: dsh drifted from the verified 0.2.1-rc.2 contracts — see the differences above before trusting the gate.");
+        console.log("check-compat: dsh drifted from the verified 0.2.1-rc.5 contracts — see the differences above before trusting the gate.");
         process.exitCode = 1;
     }
 }

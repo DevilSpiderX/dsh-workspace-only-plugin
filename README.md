@@ -40,9 +40,9 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
 
 > `github:` 直连不走安装源，机器需能直接访问 GitHub。访问不了时可下载 `.tgz` 后填绝对路径安装；插件若发布到 npm 后也可直接填包名。
 
-**升级 dsh 后**请跑一次自检：`node scripts/check-compat.mjs`（探测审批词汇、pre-execute 词汇、插件记录通道、问答通道、volatile 配置、client 模块表等契约，漂移会打印差异报告）。
+**升级 dsh 后**请跑一次自检：`node scripts/check-compat.ts`（探测审批词汇、pre-execute 词汇、插件记录通道、问答通道、volatile 配置、client 模块表等契约，漂移会打印差异报告）。
 
-> 为什么 `package.json` 不声明 `peerDependencies`：DSH 内部包的版本随发行版以 prerelease 形态演进（如 `0.2.1-rc.5`），semver 对 prerelease 的匹配规则是「只允许同 `major.minor.patch` 且带 prerelease 标记的比较器」——任何固定范围（包括 `*`）都会在下一次 rc 升级时误报「不兼容」。本插件按官方 Host-only bundle 的做法不声明依赖，真实兼容性由 `scripts/check-compat.mjs` 探测实际契约来判定。
+> 为什么 `package.json` 不声明 `peerDependencies`：DSH 内部包的版本随发行版以 prerelease 形态演进（如 `0.2.1-rc.5`），semver 对 prerelease 的匹配规则是「只允许同 `major.minor.patch` 且带 prerelease 标记的比较器」——任何固定范围（包括 `*`）都会在下一次 rc 升级时误报「不兼容」。本插件按官方 Host-only bundle 的做法不声明依赖，真实兼容性由 `scripts/check-compat.ts` 探测实际契约来判定。
 
 ## 配置
 
@@ -96,7 +96,7 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
 
 除配置里的 `always` 外，还有一条**内置默认**白名单：`<DSH_HOME>/dsh-runtimes/dsh-primary-runtime` 目录树始终按**全局条目**放行（等效设置页条目，处处生效）。
 
-- 该目录就是 Desktop 把随附 Python/Node/pnpm 分发包安装进去的目标根（宿主 `desktop-host` 的 `root: join(resolveDshHome(), 'dsh-runtimes', 'dsh-primary-runtime')`）；home 解析逐条对齐宿主 `resolveDshHome()`（`@deepseek-ai/dsh-home-paths`）：`$DSH_HOME` **非空白**时以它为准（空白值按未设置处理，`~`/`~/`/`~\` 拼写展开，结果解析为绝对路径），否则回退 `~/.dsh`；条目在**每次判定时**从环境解析，不写死绝对路径、不持久化进 `cordis.patch.yml`，换机器/换用户自动适配（`check-compat.mjs` probe 12 盯住该契约的漂移）；
+- 该目录就是 Desktop 把随附 Python/Node/pnpm 分发包安装进去的目标根（宿主 `desktop-host` 的 `root: join(resolveDshHome(), 'dsh-runtimes', 'dsh-primary-runtime')`）；home 解析逐条对齐宿主 `resolveDshHome()`（`@deepseek-ai/dsh-home-paths`）：`$DSH_HOME` **非空白**时以它为准（空白值按未设置处理，`~`/`~/`/`~\` 拼写展开，结果解析为绝对路径），否则回退 `~/.dsh`；条目在**每次判定时**从环境解析，不写死绝对路径、不持久化进 `cordis.patch.yml`，换机器/换用户自动适配（`check-compat.ts` probe 12 盯住该契约的漂移）；
 - 设置页「默认白名单（内置）」分组只读展示**本机解析结果**，不可移除（要收紧请用 deny 规则，它优先级更高）；
 - 只放行**越界维度**：deny 规则仍优先压过它；敏感文件（`sensitivePatterns`）照旧弹三键，与目录白名单正交的语义不变。
 
@@ -178,12 +178,12 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
 ## 开发自检
 
 ```sh
-pnpm install && pnpm build        # 构建 src/ → lib/（产物入库；改源码后必须重建并随源码同 commit）
-node scripts/verify-scanner.mjs   # 词法扫描用例（POSIX + Windows，含误报对照）
-node scripts/check-compat.mjs     # 对本机 dsh 安装做契约自检
+pnpm install && pnpm build        # 类型检查（tsc --noEmit，strict）+ 构建 src/ → lib/（产物入库；改源码后必须重建并随源码同 commit）
+node scripts/verify-scanner.ts   # 词法扫描用例（POSIX + Windows，含误报对照）
+node scripts/check-compat.ts     # 对本机 dsh 安装做契约自检
 ```
 
-实现结构：源码在 `src/`、构建产物在 `lib/`（`pnpm build` 生成，随 git 分发）。`src/host/scanner.js`（纯词法扫描 + 读写口径 `toolAccessKind` + DSH_HOME 解析，可独立测试）、`src/host/ask.js`（三键会合点与回退链）、`src/host/approval-compat.js`（官方审批瀑布封装）、`src/host/session-state.js`（会话档位三态与审计记录）、`src/host/session-whitelist.js`（会话级白名单的文件持久化与迁移）、`src/host/remote-service.js`（client→host 管理 RPC）、`src/host/index.js`（门禁装配）、`src/client/**`（React JSX 源码：设置页、composer 会话档位选择框、会话页「白名单目录」视图、会话标题栏待审批徽章与父会话行黄点，UI 组件用 `@deepseek-ai/dsh-client-ui-primitives` 的 `Menu`/`Input`/`Button`，与官方权限选择器同款）→ 构建为单文件 `lib/client.js`。
+实现结构：源码在 `src/`（TypeScript/TSX，strict 类型检查进 build 链）、构建产物在 `lib/`（`pnpm build` 生成，随 git 分发）。`src/host/scanner.ts`（纯词法扫描 + 读写口径 `toolAccessKind` + DSH_HOME 解析，可独立测试）、`src/host/ask.ts`（三键会合点与回退链）、`src/host/approval-compat.ts`（官方审批瀑布封装）、`src/host/session-state.ts`（会话档位三态与审计记录）、`src/host/session-whitelist.ts`（会话级白名单的文件持久化与迁移）、`src/host/remote-service.ts`（client→host 管理 RPC）、`src/host/index.ts`（门禁装配）、`src/client/**`（React TSX 源码：设置页、composer 会话档位选择框、会话页「白名单目录」视图、会话标题栏待审批徽章与父会话行黄点，UI 组件用 `@deepseek-ai/dsh-client-ui-primitives` 的 `Menu`/`Input`/`Button`，与官方权限选择器同款）→ 构建为单文件 `lib/client.js`。
 
 ## 升级说明（会话级放飞 → 会话档位）
 
@@ -192,6 +192,6 @@ node scripts/check-compat.mjs     # 对本机 dsh 安装做契约自检
 - 「总是允许该目录」新写的会话级条目只对本会话及其子代理生效（绑主会话血缘根）；旧的全局字符串条目保持处处生效；T9 时代按项目共享的 `{root, dir}` 条目已被软忽略（不匹配不显示，配置里留着也无害），重新授权即写成新会话级条目；
 - **T25：会话级条目搬家**——不再存 profile 的 `cordis.patch.yml`（`always` 只留全局字符串条目），改存 `<DSH_HOME>/dsh-workspace-only-plugin/sessions/<主会话id>/whitelist.json`。升级后首次启动自动把 `always` 里残留的 `{session, dir}` 条目迁往对应文件（迁移失败的组留在 Config 里继续生效并自动重试）；管理 RPC 形状不变（`snapshot.always` 仍返回 `{session, dir}` / 字符串条目）。
 - 管理 RPC 有变更（若你有脚本直调 `workspaceOnly/*`）：`setBypass(sessionId, enabled)` → `setScope(sessionId, scope)`（`scope` ∈ `workspace` / `outside-read` / `outside-write`），新增 `addGlobalAlways(dir)`，`snapshot` 的 `sessions[]` 由 `bypass: boolean` 改为 `scope: string`。
-- 管理 RPC 的 `args` 字段名（`sessionId`/`scope`/`dir`/`entry`/`requestId`/`choice`）即各方法的 wire 契约，由插件注册的 strict 调用描述符固定（此前源码签名推断的方式在压缩产物上会全部报 `args fields do not match the descriptor`）；改方法签名或调用载荷后跑 `node scripts/verify-remote-service.mjs` 核对三方一致。
+- 管理 RPC 的 `args` 字段名（`sessionId`/`scope`/`dir`/`entry`/`requestId`/`choice`）即各方法的 wire 契约，由插件注册的 strict 调用描述符固定（此前源码签名推断的方式在压缩产物上会全部报 `args fields do not match the descriptor`）；改方法签名或调用载荷后跑 `node scripts/verify-remote-service.ts` 核对三方一致。
 
 设计与 DSH 运行时契约详见 [`docs/increment-plan.md`](docs/increment-plan.md)（含实现中发现的契约出入记录）。

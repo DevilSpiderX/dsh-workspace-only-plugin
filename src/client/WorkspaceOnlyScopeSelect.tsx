@@ -1,7 +1,18 @@
 import {useEffect, useState} from "react";
+import type {JSX} from "react";
 import {IconChevronDownOutlineRegular, Menu} from "@deepseek-ai/dsh-client-ui-primitives";
-import {SCOPE_OPTIONS, scopeGlyph} from "./shared.js";
+import {SCOPE_OPTIONS, scopeGlyph} from "./shared.ts";
+import type {TranslateFn} from "./shared.ts";
+import type {SettingsState} from "./settings-store.ts";
 import css from "./WorkspaceOnlyScopeSelect.module.css";
+
+export interface ScopeSelectProps {
+    useWorkspaceOnly: (selector: (snapshot: SettingsState) => SettingsState) => SettingsState;
+    sessionId: string | undefined;
+    setScope: (scope: string) => void;
+    load: () => unknown;
+    t: TranslateFn;
+}
 
 /**
  * 会话档位选择器，位于 composer 工具行、紧挨平台权限选择器——
@@ -9,7 +20,7 @@ import css from "./WorkspaceOnlyScopeSelect.module.css";
  * 同款触发器 + Menu 界面。设置单个会话的门禁档位：
  * 仅工作区内 / 工作区外只读 / 完全放开。全局开关关闭或未打开会话时隐藏。
  */
-export function WorkspaceOnlyScopeSelect({useWorkspaceOnly, sessionId, setScope, load, t}) {
+export function WorkspaceOnlyScopeSelect({useWorkspaceOnly, sessionId, setScope, load, t}: ScopeSelectProps): JSX.Element | null {
     const state = useWorkspaceOnly((snapshot) => snapshot);
     const [open, setOpen] = useState(false);
     useEffect(() => {

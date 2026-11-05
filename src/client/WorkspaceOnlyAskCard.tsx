@@ -1,5 +1,27 @@
 import {useEffect, useRef, useState} from "react";
+import type {JSX, KeyboardEvent} from "react";
 import css from "./WorkspaceOnlyAskCard.module.css";
+import type {TranslateFn} from "./shared.ts";
+
+/** pending interaction 的 ask 载荷（`matched` prop）。 */
+export interface AskCardMatch {
+    readonly requestId?: string | undefined;
+    readonly key: string;
+    readonly toolName: string;
+    readonly dir: string;
+    readonly reason: string;
+    /** 命中敏感文件：always 按钮换成 pattern 措辞（任务 T4）。 */
+    readonly sensitive?: boolean | undefined;
+    readonly answerable?: boolean | undefined;
+    answer(choice: string): unknown;
+}
+
+export interface AskCardProps {
+    matched: AskCardMatch;
+    t: TranslateFn;
+    /** presence 握手：把 requestId 报回 Host（`announce` Remote）。 */
+    announce?: ((id: string) => void) | undefined;
+}
 
 /**
  * Composer 接管一个待决门禁 ask——与平台的权限升权面板
@@ -11,7 +33,7 @@ import css from "./WorkspaceOnlyAskCard.module.css";
  * `source: "workspace-only"` 标记防止 composer 选举（见 raisePanel）
  * 认领官方的 PendingApproval。
  */
-export function WorkspaceOnlyAskCard(props) {
+export function WorkspaceOnlyAskCard(props: AskCardProps): JSX.Element {
     const ask = props.matched;
     const t = props.t;
     const [answered, setAnswered] = useState(false);
@@ -26,7 +48,7 @@ export function WorkspaceOnlyAskCard(props) {
             active.current = false;
         };
     }, []);
-    const answer = (choice) => {
+    const answer = (choice: string): void => {
         if (waiting.current || ask.answerable !== true) return;
         waiting.current = true;
         setAnswered(true);
@@ -36,8 +58,8 @@ export function WorkspaceOnlyAskCard(props) {
             setAnswered(false);
         });
     };
-    const keydown = (event) => {
-        const element = event.target;
+    const keydown = (event: KeyboardEvent<HTMLDivElement>): void => {
+        const element = event.target as Element;
         if (event.defaultPrevented || !event.currentTarget.contains(document.activeElement) || element.closest("input, textarea, select, [contenteditable=\"true\"], [contenteditable=\"\"]") !== null) return;
         if (event.key !== "Enter" && event.key !== "Escape") return;
         if (event.key === "Enter" && element.closest("button, a[href], [role=\"button\"]") !== null) return;

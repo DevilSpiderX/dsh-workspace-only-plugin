@@ -39,9 +39,10 @@
   },
   "license": "MIT",
   "scripts": {
-    "verify-scanner": "node scripts/verify-scanner.mjs",
-    "check-compat": "node scripts/check-compat.mjs",
-    "build": "vite build -c vite.host.config.mjs && vite build -c vite.client.config.mjs",
+    "verify-scanner": "node scripts/verify-scanner.ts",
+    "check-compat": "node scripts/check-compat.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit && vite build -c vite.host.config.ts && vite build -c vite.client.config.ts",
     "prepack": "pnpm build"
   },
   "packageManager": "pnpm@12.3.4",
@@ -52,7 +53,10 @@
     "@deepseek-ai/dsh-session": "0.2.1-rc.5",
     "@deepseek-ai/dsh-user-approval": "0.2.1-rc.5",
     "@deepseek-ai/schemastery": "3.18.5",
+    "@types/node": "^22",
+    "@types/react": "^19",
     "react": "^19",
+    "typescript": "^5",
     "vite": "^8.3.5"
   }
 }

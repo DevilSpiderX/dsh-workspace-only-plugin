@@ -26,6 +26,7 @@
  * （子代理子会话取父快照，其余取最严默认值）。
  */
 import {appendPluginRecord, pluginRecordOf} from "@deepseek-ai/dsh-session";
+import type {PluginRecordMap, PluginRecordType, Session, SessionSeq} from "@deepseek-ai/dsh-session";
 
 /** 本插件拥有的插件记录类型（语法：`plugin:` + 小写斜杠分段）。 */
 export const RECORD = {
@@ -33,7 +34,7 @@ export const RECORD = {
     decided: "plugin:workspace-only/decided",
     alwaysAdded: "plugin:workspace-only/always-added",
     bypass: "plugin:workspace-only/bypass"
-};
+} as const;
 
 /**
  * 每会话访问档位。门禁在每次工作区外引用时读取它：
@@ -49,21 +50,71 @@ export const SCOPE = {
     outsideRead: "outside-read",
     /** 完全放开 —— 工作区外访问放行，不再询问。 */
     outsideWrite: "outside-write"
-};
+} as const;
+
+/** 生效档位值。 */
+export type Scope = (typeof SCOPE)[keyof typeof SCOPE];
 
 /** 所有可识别的档位值（未知输入回退到最严档位）。 */
-const SCOPES = new Set(Object.values(SCOPE));
+const SCOPES: ReadonlySet<string> = new Set(Object.values(SCOPE));
 
 /** 把任意用户/记录输入归一化为档位；未知一律取最严档位。 */
-export function normalizeScope(value) {
-    return SCOPES.has(value) ? value : SCOPE.workspace;
+export function normalizeScope(value: unknown): Scope {
+    return typeof value === "string" && SCOPES.has(value) ? (value as Scope) : SCOPE.workspace;
+}
+
+/** 档位记录的载荷：当前 `{ scope }`（含继承快照戳记）或旧版 `{ enabled }` 旁路形状。 */
+export type ScopeRecordPayload =
+    | {readonly scope: string; readonly inherited?: true}
+    | {readonly enabled: boolean};
+
+/** 一次门禁询问（ask）的审计载荷。 */
+export interface AskAuditPayload {
+    readonly toolName: string;
+    readonly dir?: string | undefined;
+    readonly reason?: string | undefined;
+}
+
+/** 一次裁决（decision）的审计载荷。 */
+export interface DecisionAuditPayload {
+    readonly toolName: string;
+    readonly dir?: string | undefined;
+    readonly channel: string;
+    readonly choice: string;
+    readonly label?: string | undefined;
+    readonly ms: number;
+}
+
+/** 「总是允许」写入的审计载荷（目录条目或敏感 pattern）。 */
+export interface AlwaysAddedPayload {
+    readonly dir: string;
+    readonly toolName: string;
+    readonly kind: "dir" | "pattern";
+}
+
+// 把四种记录载荷注册进官方 PluginRecordMap（声明合并）：`appendPluginRecord`
+// 的写入类型由此精确化，记录形状的漂移在编译期报错。
+declare module "@deepseek-ai/dsh-session" {
+    interface PluginRecordMap {
+        "plugin:workspace-only/asked": AskAuditPayload;
+        "plugin:workspace-only/decided": DecisionAuditPayload;
+        "plugin:workspace-only/always-added": AlwaysAddedPayload;
+        "plugin:workspace-only/bypass": ScopeRecordPayload;
+    }
 }
 
 /** 会话档位的进程内权威值，按会话 id 索引。 */
-const liveScope = new Map();
+const liveScope = new Map<string, Scope>();
+
+/** 血缘解析器：由调用点（index）注入，把父会话 id 解析为 Session 对象。 */
+export type ResolveParent = (id: string) => Session | null | undefined;
 
 /** 尽力而为的审计追加；失败绝不会打断门禁本身。 */
-export function recordEvent(session, type, data) {
+export function recordEvent<K extends Extract<keyof PluginRecordMap, PluginRecordType>>(
+    session: Session | undefined,
+    type: K,
+    data: NoInfer<PluginRecordMap[K]>
+): SessionSeq | undefined {
     if (session === void 0) return undefined;
     try {
         return appendPluginRecord(session, type, data);
@@ -78,13 +129,14 @@ export function recordEvent(session, type, data) {
  * 父继承（子代理子会话）之间做选择。同时接受当前的 `{ scope }` 形状
  * （含 `{ scope, inherited: true }` 快照戳记）与旧版 `{ enabled }` 旁路形状。
  */
-function foldScopeEntry(session) {
+function foldScopeEntry(session: Session): Scope | undefined {
     try {
         const events = session.snapshotEvents();
         for (let index = events.length - 1; index >= 0; index -= 1) {
             const record = pluginRecordOf(events[index]);
             if (record === void 0 || record.type !== RECORD.bypass) continue;
-            const data = record.data;
+            // 记录载荷是自家写的 JSON（旧版本形态也在），读取保持宽松。
+            const data = record.data as {scope?: unknown; enabled?: unknown} | undefined;
             if (typeof data?.scope === "string") return normalizeScope(data.scope);
             // 旧版布尔旁路：released = 完全放开，engaged = 仅工作区内。
             return data?.enabled === true ? SCOPE.outsideWrite : SCOPE.workspace;
@@ -104,7 +156,7 @@ const INHERIT_MAX_DEPTH = 32;
  * 首次解析时定格；`visited`（以起始会话 id 为种子）加上 `depth` 保证畸形血缘
  * （成环）降级到最严默认值而不是无限递归。
  */
-function scopeOf(session, resolveParent, visited, depth) {
+function scopeOf(session: Session, resolveParent: ResolveParent | undefined, visited: Set<string>, depth: number): Scope {
     const live = liveScope.get(session.id);
     if (live !== void 0) return live;
     const folded = foldScopeEntry(session);
@@ -121,7 +173,7 @@ function scopeOf(session, resolveParent, visited, depth) {
         return SCOPE.workspace;
     }
     visited.add(parentId);
-    let parent;
+    let parent: Session | null | undefined;
     try {
         parent = resolveParent(parentId);
     } catch {
@@ -147,17 +199,17 @@ function scopeOf(session, resolveParent, visited, depth) {
  * 解析成功的节点——退回会话自身 id 是收紧方向：宁可多问一次，也绝不把别的
  * 会话授权当成自己的。裸会话 id（无 header）没有血缘，按自身 id 处理。
  */
-export function rootSessionIdOf(session, resolveParent) {
+export function rootSessionIdOf(session: Session | string | null | undefined, resolveParent?: ResolveParent): string | undefined {
     if (session === void 0 || session === null) return void 0;
     if (typeof session === "string") return session;
     const visited = new Set([session.id]);
-    let current = session;
+    let current: Session = session;
     for (let depth = 0; depth < INHERIT_MAX_DEPTH; depth += 1) {
         const parentId = current.header?.parentSession;
         if (typeof parentId !== "string" || parentId === "" || visited.has(parentId)) break;
         if (typeof resolveParent !== "function") break;
         visited.add(parentId);
-        let parent;
+        let parent: Session | null | undefined;
         try {
             parent = resolveParent(parentId);
         } catch {
@@ -173,7 +225,7 @@ export function rootSessionIdOf(session, resolveParent) {
  * 生效的会话档位：实时值优先，重启后回放记录，然后（带 `resolveParent` 解析器的
  * 子代理子会话）取父会话的一次性快照。接受 Session 对象或裸会话 id（仅查实时值）。
  */
-export function sessionScope(sessionOrId, resolveParent) {
+export function sessionScope(sessionOrId: Session | string | null | undefined, resolveParent?: ResolveParent): Scope {
     if (sessionOrId === void 0 || sessionOrId === null) return SCOPE.workspace;
     if (typeof sessionOrId === "string") {
         const live = liveScope.get(sessionOrId);
@@ -187,10 +239,10 @@ export function sessionScope(sessionOrId, resolveParent) {
  * 接受 Session 对象或裸会话 id；仅 id 的变更先留在内存里，由下一个轮次中的
  * {@link ensureScopePersisted} 重新落盘。
  */
-export function setSessionScope(sessionOrId, scope) {
+export function setSessionScope(sessionOrId: Session | string | null | undefined, scope: unknown): Scope {
     if (sessionOrId === void 0 || sessionOrId === null) return SCOPE.workspace;
     const session = typeof sessionOrId === "string" ? void 0 : sessionOrId;
-    const id = session === void 0 ? String(sessionOrId) : session.id;
+    const id: string = session === void 0 ? String(sessionOrId) : session.id;
     const next = normalizeScope(scope);
     liveScope.set(id, next);
     if (session !== void 0) recordEvent(session, RECORD.bypass, {scope: next});
@@ -202,7 +254,7 @@ export function setSessionScope(sessionOrId, scope) {
  * 在门禁内（开放轮次中）调用，这样即使变更发生在两轮之间，UI 切换的档位也能
  * 在重启后存活。
  */
-export function ensureScopePersisted(session) {
+export function ensureScopePersisted(session: Session | undefined): void {
     if (session === void 0) return;
     const live = liveScope.get(session.id);
     if (live === void 0) return;
@@ -214,14 +266,14 @@ export function ensureScopePersisted(session) {
 }
 
 /** 单次门禁 ask 的审计事件对，以及 always-added 轨迹（任务 B）。 */
-export function recordAsk(session, payload) {
+export function recordAsk(session: Session | undefined, payload: AskAuditPayload): void {
     recordEvent(session, RECORD.asked, payload);
 }
 
-export function recordDecision(session, payload) {
+export function recordDecision(session: Session | undefined, payload: DecisionAuditPayload): void {
     recordEvent(session, RECORD.decided, payload);
 }
 
-export function recordAlwaysAdded(session, payload) {
+export function recordAlwaysAdded(session: Session | undefined, payload: AlwaysAddedPayload): void {
     recordEvent(session, RECORD.alwaysAdded, payload);
 }

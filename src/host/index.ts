@@ -1,8 +1,8 @@
 import {realpathSync} from "node:fs";
 import {basename, dirname, isAbsolute, join, resolve} from "node:path";
 import z from "@deepseek-ai/schemastery";
-import {CHANNEL, CHOICE, createAskFlow} from "./ask.js";
-import {createRemoteService} from "./remote-service.js";
+import {CHANNEL, CHOICE, createAskFlow} from "./ask.ts";
+import {createRemoteService} from "./remote-service.ts";
 import {
     builtinAlwaysDirs,
     denyMatch,
@@ -15,9 +15,13 @@ import {
     scanTargets,
     sensitiveMatch,
     toolAccessKind
-} from "./scanner.js";
-import {ensureScopePersisted, rootSessionIdOf, SCOPE, sessionScope, setSessionScope} from "./session-state.js";
-import {addSessionDir, mergeSessionDirs, readAllSessionEntries, readSessionDirs, removeSessionDir} from "./session-whitelist.js";
+} from "./scanner.ts";
+import type {PathEntry, SensitiveConfig, SensitiveHit} from "./scanner.ts";
+import {ensureScopePersisted, rootSessionIdOf, SCOPE, sessionScope, setSessionScope} from "./session-state.ts";
+import type {ResolveParent, Scope} from "./session-state.ts";
+import {addSessionDir, mergeSessionDirs, readAllSessionEntries, readSessionDirs, removeSessionDir} from "./session-whitelist.ts";
+import type {Context} from "@deepseek-ai/cordis";
+import type {Session} from "@deepseek-ai/dsh-session";
 
 /**
  * Workspace Only：一个全局开关，把每种沙箱模式（read-only / workspace-write /
@@ -69,7 +73,7 @@ export const Config = z.object({
      *
      * 会话级条目（`{ session, dir }`）T25 起不再存这里 —— 持久化到
      * `<DSH_HOME>/dsh-workspace-only-plugin/sessions/<血缘根id>/whitelist.json`
-     * （见 `session-whitelist.js`）。元素 schema 仍接受 `{ session, dir }`
+     * （见 `session-whitelist.ts`）。元素 schema 仍接受 `{ session, dir }`
      * 形状：一是旧配置与迁移失败的残留仍能加载（匹配照旧生效、启动时自动
      * 重试迁移），二是**只声明字符串会让对象条目的每次设置写回都过不了
      * schemastery 校验**（"expected string but got [object Object]"）——
@@ -115,9 +119,31 @@ export const Config = z.object({
     realpathCheck: z.boolean().default(false)
 });
 
+/**
+ * `apply` 的配置读取面。schemastery 的输出类型不体现 `.volatile()` 的运行时
+ * 引用包装（读到的可能是 `.get()` 引用），因此字段一律按 `unknown` 读、经
+ * {@link readVolatile} 解引用——这是运行时的真实形状。
+ */
+export interface PluginConfigInput {
+    readonly enabled?: unknown;
+    readonly always?: unknown;
+    readonly sensitivePatterns?: unknown;
+    readonly sensitiveAllowPatterns?: unknown;
+    readonly sensitiveAlways?: unknown;
+    readonly deny?: unknown;
+    readonly renamePresetLabel?: unknown;
+    readonly dialogTimeoutMs?: unknown;
+    readonly fastDenyMs?: unknown;
+    readonly scanAllTools?: unknown;
+    readonly scanIgnoreTools?: unknown;
+    readonly realpathCheck?: unknown;
+}
+
 /** 读取 `.volatile()` 引用（或已是普通值的值）。 */
-function readVolatile(value) {
-    return value !== null && typeof value === "object" && typeof value.get === "function" ? value.get() : value;
+function readVolatile(value: unknown): unknown {
+    return value !== null && typeof value === "object" && typeof (value as {get?: unknown}).get === "function"
+        ? (value as {get: () => unknown}).get()
+        : value;
 }
 
 // `@deepseek-ai/dsh-sandbox` 的升权语义，此处内联（本插件不依赖该包；
@@ -126,24 +152,25 @@ function readVolatile(value) {
 // - `WIDER_MODES` —— 执行时检查的严格更宽阶梯；
 // - `approveEscalation`：`if (mode === effectiveMode) return effectiveMode;`
 //   重复请求零弹窗返回当前模式，只有严格更宽的才会弹出审批对话框。
-const ESCALATION_TARGETS = new Set(["workspace-write", "danger-full-access"]);
-const WIDER_MODES = {
+const ESCALATION_TARGETS: ReadonlySet<string> = new Set(["workspace-write", "danger-full-access"]);
+const WIDER_MODES: Readonly<Record<string, readonly string[]>> = {
     "read-only": ["workspace-write", "danger-full-access"],
     "workspace-write": ["danger-full-access"]
 };
-const STANDING_MODES = new Set(["read-only", "workspace-write", "danger-full-access"]);
+const STANDING_MODES: ReadonlySet<string> = new Set(["read-only", "workspace-write", "danger-full-access"]);
 
 /**
  * 会话当前的沙箱模式，经 `ctx.sandboxPolicy.resolve({ session })` 获取
  * （与执行强制时调用的是同一个接口）。策略服务缺席或抛错时返回 `undefined` ——
  * 决策 D1：不确定时绝不跳过。
  */
-function standingModeOf(ctx, session) {
+function standingModeOf(ctx: Context, session: Session | undefined): string | undefined {
     try {
-        const policy = ctx.get("sandboxPolicy");
+        // sandboxPolicy 是注入服务，类型在未钉进 devDeps 的包里，按最小形状收窄。
+        const policy = ctx.get("sandboxPolicy") as {resolve?: (input: {session?: Session}) => {mode?: unknown} | undefined} | undefined;
         if (policy === void 0 || typeof policy.resolve !== "function") return void 0;
         const mode = policy.resolve(session === void 0 ? {} : {session})?.mode;
-        return STANDING_MODES.has(mode) ? mode : void 0;
+        return typeof mode === "string" && STANDING_MODES.has(mode) ? mode : void 0;
     } catch {
         return void 0;
     }
@@ -156,7 +183,7 @@ function standingModeOf(ctx, session) {
  * 上游绝不弹窗 —— `approveEscalation` 不经审批直接返回当前模式或抛错 —— 因此它们
  * 必须走本门禁（任务 T1）。
  */
-function isGuaranteedEscalationPrompt(ctx, session, args) {
+function isGuaranteedEscalationPrompt(ctx: Context, session: Session | undefined, args: Record<string, unknown>): boolean {
     const requested = args.sandbox_permissions;
     if (typeof requested !== "string" || !ESCALATION_TARGETS.has(requested)) return false;
     const justification = args.justification;
@@ -169,6 +196,13 @@ function isGuaranteedEscalationPrompt(ctx, session, args) {
 /** 供设置表面展示的最近 ask 目录（仅显示元数据）。 */
 const RECENT_LIMIT = 20;
 
+/** 一条最近询问记录（设置页展示元数据）。 */
+interface RecentAsk {
+    dir: string;
+    toolName: string;
+    at: number;
+}
+
 /**
  * 任务 T11：经最深的现存祖先目录规范化路径，再把缺失的尾巴接回去
  * （MiMo 的 `realpathBestEffort`），这样尚未创建的写目标仍能穿过符号链接父目录
@@ -177,9 +211,9 @@ const RECENT_LIMIT = 20;
  * 符号链接都能解析；`.native` 可能返回 `\\?\` 前缀写法）。任何失败都返回
  * `undefined` —— 调用方按 fail-closed 处理，即当作外部。
  */
-function canonicalizeBestEffort(target) {
-    if (typeof target !== "string" || target === "") return void 0;
-    const tail = [];
+function canonicalizeBestEffort(target: string): string | undefined {
+    if (target === "") return void 0;
+    const tail: string[] = [];
     let head = target;
     for (let depth = 0; depth < 64; depth += 1) {
         try {
@@ -187,7 +221,7 @@ function canonicalizeBestEffort(target) {
             return tail.length === 0 ? real : join(real, ...tail.slice().reverse());
         } catch (err) {
             // ENOENT 向上走一级；其他任何错误（以及根本身消失）都是硬失败。
-            if (err?.code !== "ENOENT") return void 0;
+            if ((err as {code?: unknown} | null)?.code !== "ENOENT") return void 0;
             const parent = dirname(head);
             if (parent === head) return void 0;
             tail.push(basename(head));
@@ -204,7 +238,7 @@ function canonicalizeBestEffort(target) {
  * 这样 win32 的大小写/盘符/UNC 语义成立，磁盘上的大小写差异无关紧要。
  * 任何解析失败都算外部（fail-closed）。
  */
-function escapesViaRealpath(target, root) {
+function escapesViaRealpath(target: string, root: string): boolean {
     const abs = isAbsolute(target) ? target : resolve(root, target);
     const realTarget = canonicalizeBestEffort(abs);
     const realRoot = canonicalizeBestEffort(root);
@@ -223,7 +257,7 @@ function escapesViaRealpath(target, root) {
  * 它的规则压过上面任何冲突措辞。工具表与 `toolAccessKind` 完全一致（shell 始终
  * 算写），并列出生效的 always 白名单，让模型知道哪些目录永不弹窗。
  */
-function narrationFor(scope, dirs) {
+function narrationFor(scope: Scope, dirs: unknown): string {
     const list = Array.isArray(dirs) ? dirs : [];
     const granted = list.length === 0
         // language=markdown
@@ -249,71 +283,86 @@ function narrationFor(scope, dirs) {
     return `${override} Scope: 仅工作区内 (\`workspace-only\`): every file access OUTSIDE the session workspace asks the user on a three-choice card (\`allow once\` / \`always allow this directory\` / \`deny\`) — in every sandbox mode, and even when the approval policy is never. Inside the workspace runs normally except sensitive files.${always}${never}`;
 }
 
-export function apply(ctx, config = {}) {
-    const isEnabled = () => readVolatile(config.enabled) === true;
+/** 白名单条目解析结果：`kind` 是匹配与去重键的判别依据。 */
+interface AlwaysEntryParsed {
+    readonly kind: "global" | "session" | "legacy";
+    readonly session: string | undefined;
+    readonly root: string | undefined;
+    readonly dir: string;
+}
+
+export function apply(ctx: Context, config: PluginConfigInput = {}): void {
+    const isEnabled = (): boolean => readVolatile(config.enabled) === true;
     /**
      * 一条白名单条目。三种形状：全局字符串、`{ session, dir }` 会话级条目
      *（T20，session=主会话血缘根 id）、`{ root, dir }` 旧项目级条目（T9，
      * 软忽略，仅保留在配置里不炸加载）。`kind` 是匹配与去重键的判别依据。
      */
-    const alwaysEntry = (entry) => {
+    const alwaysEntry = (entry: unknown): AlwaysEntryParsed | undefined => {
         if (typeof entry === "string" && entry !== "") return {
             kind: "global",
             session: void 0,
             root: void 0,
             dir: entry
         };
-        if (entry !== null && typeof entry === "object" && typeof entry.dir === "string" && entry.dir !== "") {
-            if (typeof entry.session === "string" && entry.session !== "") {
-                return {kind: "session", session: entry.session, root: void 0, dir: entry.dir};
+        if (entry !== null && typeof entry === "object") {
+            const record = entry as {dir?: unknown; session?: unknown; root?: unknown};
+            if (typeof record.dir === "string" && record.dir !== "") {
+                if (typeof record.session === "string" && record.session !== "") {
+                    return {kind: "session", session: record.session, root: void 0, dir: record.dir};
+                }
+                return {
+                    kind: "legacy",
+                    session: void 0,
+                    root: typeof record.root === "string" && record.root !== "" ? record.root : void 0,
+                    dir: record.dir
+                };
             }
-            return {
-                kind: "legacy",
-                session: void 0,
-                root: typeof entry.root === "string" && entry.root !== "" ? entry.root : void 0,
-                dir: entry.dir
-            };
         }
         return void 0;
     };
-    const alwaysKey = (entry) => {
+    const alwaysKey = (entry: unknown): string => {
         const parsed = alwaysEntry(entry);
         return parsed === void 0 ? "" : `${parsed.kind}:${parsed.session ?? parsed.root ?? ""}|${parsed.dir}`;
     };
-    const alwaysList = () => {
+    const alwaysList = (): unknown[] => {
         const value = readVolatile(config.always);
         return Array.isArray(value) ? value.filter((entry) => alwaysEntry(entry) !== void 0) : [];
     };
-    const stringList = (value, fallback) => {
+    const stringList = (value: unknown, fallback: readonly string[]): string[] => {
         const list = readVolatile(value);
-        return Array.isArray(list) ? list.filter((entry) => typeof entry === "string") : fallback;
+        return Array.isArray(list) ? list.filter((entry): entry is string => typeof entry === "string") : [...fallback];
     };
     /** 任务 T4 的敏感文件匹配器输入（patterns 是普通值，always 是 volatile）。 */
-    const sensitiveConfigOf = () => ({
+    const sensitiveConfigOf = (): SensitiveConfig => ({
         patterns: stringList(config.sensitivePatterns, DEFAULT_SENSITIVE_PATTERNS),
         allowPatterns: stringList(config.sensitiveAllowPatterns, DEFAULT_SENSITIVE_ALLOWS),
         alwaysPatterns: stringList(config.sensitiveAlways, [])
     });
     /** 任务 T5 的 deny 规则（运行时写入）。 */
-    const denyList = () => stringList(config.deny, []);
-    const timeoutMs = () => readVolatile(config.dialogTimeoutMs);
-    const recentAsks = [];
-    const settingsOf = () => {
+    const denyList = (): string[] => stringList(config.deny, []);
+    const timeoutMs = (): number | undefined => {
+        const value = readVolatile(config.dialogTimeoutMs);
+        return typeof value === "number" ? value : void 0;
+    };
+    const recentAsks: RecentAsk[] = [];
+    const settingsOf = (): {update: (id: string, patch: Record<string, unknown>) => Promise<unknown>} | undefined => {
         try {
-            return ctx.get("settings");
+            // settings 是注入服务，类型在未钉进 devDeps 的包里，按最小形状收窄。
+            return ctx.get("settings") as {update: (id: string, patch: Record<string, unknown>) => Promise<unknown>} | undefined;
         } catch {
             return void 0;
         }
     };
 
     /** 经设置服务持久化 Config 补丁（profile cordis.patch.yml）。 */
-    async function writeConfig(patch) {
+    async function writeConfig(patch: Record<string, unknown>): Promise<void> {
         const settings = settingsOf();
         if (settings === void 0 || typeof settings.update !== "function") throw new Error("settings service is unavailable");
         await settings.update("workspace-only", patch);
     }
 
-    async function allowAlways(dir, session) {
+    async function allowAlways(dir: string, session?: Session | undefined): Promise<void> {
         const normalized = String(dir);
         // ask 卡片与会话页的授权绑授权会话的**血缘根**（主会话 id，T20）：
         // 主会话及其子代理共享一批条目，不同主会话互相隔离。T25 起这类条目
@@ -332,7 +381,7 @@ export function apply(ctx, config = {}) {
     }
 
     /** 任务 T4：持久化一条敏感 pattern（"总是允许此类文件"）。 */
-    async function allowPattern(pattern) {
+    async function allowPattern(pattern: string): Promise<void> {
         const normalized = String(pattern);
         const current = stringList(config.sensitiveAlways, []);
         const next = [...new Set([...current, normalized])];
@@ -340,19 +389,19 @@ export function apply(ctx, config = {}) {
     }
 
     /** 任务 T5：持久化一条永不允许规则（目录前缀或 glob）。 */
-    async function addDeny(entry) {
+    async function addDeny(entry: string): Promise<void> {
         const normalized = String(entry);
         const next = [...new Set([...denyList(), normalized])];
         await writeConfig({deny: next});
     }
 
-    async function removeDeny(entry) {
+    async function removeDeny(entry: string): Promise<void> {
         const normalized = String(entry);
         const next = denyList().filter((item) => item !== normalized);
         await writeConfig({deny: next});
     }
 
-    async function removeAlways(entry) {
+    async function removeAlways(entry: unknown): Promise<void> {
         // 会话级条目（`{session, dir}`）删白名单文件；顺手清掉同 key 的
         // 迁移残留（Config 里可能还留着迁移失败的旧条目）。其余形状
         //（全局字符串、legacy `{root, dir}`）删 Config。
@@ -370,8 +419,8 @@ export function apply(ctx, config = {}) {
         await writeConfig({always: next});
     }
 
-    function noteRecent(dir, toolName) {
-        const entry = {dir: String(dir), toolName, at: Date.now()};
+    function noteRecent(dir: string, toolName: string): void {
+        const entry: RecentAsk = {dir: String(dir), toolName, at: Date.now()};
         const index = recentAsks.findIndex((item) => item.dir === entry.dir);
         if (index >= 0) recentAsks.splice(index, 1);
         recentAsks.unshift(entry);
@@ -379,7 +428,7 @@ export function apply(ctx, config = {}) {
     }
 
     /** 白名单命中：目标位于某条 always 目录之内（T3 两侧展开；T20 先比条目归属会话）。 */
-    function alwaysAllows(target, session) {
+    function alwaysAllows(target: string, session: Session | undefined): boolean {
         const resolved = expandHomeSpelling(target) ?? target;
         // 内置默认白名单（`<DSH_HOME>/dsh-runtimes/dsh-primary-runtime`，按机器解析）
         // 像全局条目一样放行 —— 代码解析、绝不持久化，因此没有设置会烘焙出错误路径，
@@ -411,7 +460,7 @@ export function apply(ctx, config = {}) {
      * Config 残留）。匹配方式与 {@link alwaysAllows} 相同，只是不做路径
      * 包含判定。
      */
-    function activeAlwaysDirs(session) {
+    function activeAlwaysDirs(session: Session | undefined): string[] {
         const dirs = builtinAlwaysDirs();
         const sessionKey = rootSessionIdOf(session, resolveParent);
         for (const raw of alwaysList()) {
@@ -433,9 +482,9 @@ export function apply(ctx, config = {}) {
      * 加全部会话白名单文件条目，按 {@link alwaysKey} 去重（同 key 保留一份，
      * 形状都是 `{session, dir}`，客户端展示无感知）。
      */
-    function mergedAlwaysList() {
-        const seen = new Set();
-        const merged = [];
+    function mergedAlwaysList(): unknown[] {
+        const seen = new Set<string>();
+        const merged: unknown[] = [];
         for (const entry of [...alwaysList(), ...readAllSessionEntries()]) {
             const key = alwaysKey(entry);
             if (key === "" || seen.has(key)) continue;
@@ -452,8 +501,8 @@ export function apply(ctx, config = {}) {
      * 绝不丢授权。启动时 fire-and-forget；迁移完成前的读取路径合并两边
      * （按 key 去重），因此竞态窗口内条目也不会闪断或重复展示。
      */
-    async function migrateSessionWhitelist() {
-        const groups = new Map();
+    async function migrateSessionWhitelist(): Promise<void> {
+        const groups = new Map<string, string[]>();
         for (const item of alwaysList()) {
             const entry = alwaysEntry(item);
             if (entry === void 0 || entry.kind !== "session" || typeof entry.session !== "string" || entry.session === "") continue;
@@ -484,15 +533,16 @@ export function apply(ctx, config = {}) {
     // 可选启用的 `workspace-write` 预设显示名改写。
     if (config.renamePresetLabel === true) {
         const presets = ctx.permissionPresets.presets;
-        if (Object.hasOwn(presets, "workspace-write") && presets["workspace-write"] !== void 0) {
-            presets["workspace-write"].name = "Write Only";
+        const preset = presets["workspace-write"];
+        if (Object.hasOwn(presets, "workspace-write") && preset !== void 0) {
+            preset.name = "Write Only";
         }
     }
 
     // 子代理子会话以一次性快照继承父会话档位（创建时语义，与平台的委派沙箱与
     // 审批 seed 一致）：session-state 经这个解析器走父链，并把结果钉在子会话
     // 自己的日志上。
-    const resolveParent = (id) => resolveSession(ctx, id);
+    const resolveParent: ResolveParent = (id) => resolveSession(ctx, id);
 
     // 叙述（任务 T14）：模型必须知道门禁生效且压过平台自己的 sandbox/approval
     // 条款、哪些工具在本会话档位下算读或写，以及哪些目录永不弹窗。
@@ -513,7 +563,10 @@ export function apply(ctx, config = {}) {
         timeoutMs,
         allowAlways,
         allowPattern,
-        fastDenyMs: () => readVolatile(config.fastDenyMs),
+        fastDenyMs: () => {
+            const value = readVolatile(config.fastDenyMs);
+            return typeof value === "number" ? value : void 0;
+        },
         // 任务 T2：新白名单条目批量放行匹配的待决 ask。
         // 任务 T20：回调携带待决项的会话对象，会话级条目只在自己的主会话
         //（血缘根）下匹配。
@@ -567,9 +620,9 @@ export function apply(ctx, config = {}) {
         // 工作区内真实目标逃逸出去的符号链接翻转为外部，与其他外部引用一样被询问
         // （白名单/deny 匹配仍保持词法）。
         const recheckRealpath = readVolatile(config.realpathCheck) === true;
-        const outside = [];
-        const sensitive = [];
-        const sensitiveSeen = new Set();
+        const outside: PathEntry[] = [];
+        const sensitive: Array<PathEntry & SensitiveHit> = [];
+        const sensitiveSeen = new Set<string>();
         const sensitiveConfig = sensitiveConfigOf();
         for (const entry of entries) {
             if (isPlatformTempTarget(entry.path)) continue;
@@ -590,7 +643,8 @@ export function apply(ctx, config = {}) {
         if (outside.length === 0 && sensitive.length === 0) return next();
         const reason = [...outside.slice(0, 1), ...sensitive.slice(0, 1)].map((entry) => entry.reason).join("；");
         if (exec.agent === void 0) return {kind: "deny", reason: `[workspace-only] ${reason}`};
-        const focus = outside[0] ?? sensitive[0];
+        //（上一行拒绝保证了 `outside`/`sensitive` 非空，`focus` 必然存在。）
+        const focus = outside[0] ?? sensitive[0]!;
         noteRecent(directoryOf(focus.path), exec.name);
         const verdict = await askFlow.askOutside({
             ctx,
@@ -678,23 +732,25 @@ export function apply(ctx, config = {}) {
 }
 
 /** 本宿主的全部活跃会话，防御性写法（sessions 服务可能缺席）。 */
-function liveSessions(ctx) {
+function liveSessions(ctx: Context): Session[] {
     try {
-        const sessions = ctx.get("sessions");
+        // sessions 是注入服务，类型在未钉进 devDeps 的包里，按最小形状收窄。
+        const sessions = ctx.get("sessions") as {list?: () => unknown} | undefined;
         const list = typeof sessions?.list === "function" ? sessions.list() : [];
-        return Array.isArray(list) ? list : [];
+        return Array.isArray(list) ? (list as Session[]) : [];
     } catch {
         return [];
     }
 }
 
 /** 经 sessions 服务按 id 解析活跃 Session，若已组合进上下文。 */
-function resolveSession(ctx, sessionId) {
+function resolveSession(ctx: Context, sessionId: string | undefined): Session | undefined {
     if (typeof sessionId !== "string" || sessionId === "") return void 0;
     try {
-        const sessions = ctx.get("sessions");
+        // sessions 是注入服务，类型在未钉进 devDeps 的包里，按最小形状收窄。
+        const sessions = ctx.get("sessions") as {get?: (id: string) => unknown} | undefined;
         const session = typeof sessions?.get === "function" ? sessions.get(sessionId) : void 0;
-        return session;
+        return session as Session | undefined;
     } catch {
         return void 0;
     }
