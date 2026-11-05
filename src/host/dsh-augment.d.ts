@@ -26,6 +26,17 @@ export type PreExecuteVerdict =
     | {readonly kind: "allow"}
     | {readonly kind: "deny"; readonly reason?: string | undefined};
 
+/** 命令 handler 的入参（字面复刻 `dsh-commands` 的 `CommandInvocation`，只声明用到的面）。 */
+export interface CommandInvocation {
+    readonly agent: {readonly session: Session};
+    readonly rawInput: string;
+}
+
+/** 命令 handler 的结果（字面复刻 `dsh-commands` 的 `CommandResult`）。 */
+export type CommandResult =
+    | {readonly kind: "success"; readonly text?: string}
+    | {readonly kind: "error"; readonly text: string};
+
 declare module "@deepseek-ai/cordis" {
     interface Events {
         /** 转发事件白名单上的 `settings/document-updated`（携带 ask 载荷 / askDone 撤卡）。 */
@@ -45,6 +56,15 @@ declare module "@deepseek-ai/cordis" {
         /** 权限预设表（`dsh-user-approval` 的注入服务）：key = 预设模式名。 */
         permissionPresets: {
             presets: Record<string, {name: string} | undefined>;
+        };
+        /** 输入框命令注册（`dsh-commands` 的注入服务，T30）。 */
+        commands: {
+            register(definition: {
+                readonly name: string;
+                readonly description: string;
+                readonly input?: {readonly hint: string} | undefined;
+                readonly handler: (invocation: CommandInvocation) => CommandResult | Promise<CommandResult>;
+            }): () => void;
         };
     }
 }

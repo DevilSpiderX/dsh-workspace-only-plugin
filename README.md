@@ -100,6 +100,22 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
 - 设置页「默认白名单（内置）」分组只读展示**本机解析结果**，不可移除（要收紧请用 deny 规则，它优先级更高）；
 - 只放行**越界维度**：deny 规则仍优先压过它；敏感文件（`sensitivePatterns`）照旧弹三键，与目录白名单正交的语义不变。
 
+## 输入框命令：/wo-allow
+
+在输入框 slash 菜单选择 `wo-allow`（或直接输入命令行）：
+
+```
+/wo-allow <目录绝对路径>
+```
+
+把目录加入**本会话白名单**（绑会话血缘根：本会话及其子代理生效），与三键卡片「总是允许该目录」是**同一条写入路径**（T25 会话白名单文件），可在会话页「白名单目录」中管理。要点：
+
+- 只接受**绝对路径**（POSIX / Windows 盘符 / UNC 三形态）；`~`、`%USERPROFILE%`、`$env:USERPROFILE` 等家目录写法先展开再判定，无法解析时按 fail-closed 拒绝；
+- 归一化折叠 `..` 与重复分隔符、去尾分隔符（保留 `C:\`、`/` 等文件系统根）；UNC 斜杠写法（`//server/share`）开头的双斜杠保留（`posix.normalize` 会折叠它，解析器会补回）；
+- 空输入、相对路径、写回失败都返回错误文本，**绝不静默放行**——写回失败时该目录的访问仍会照常询问；
+- **deny（`never-allow`）与敏感文件规则不因白名单放宽**：白名单只豁免普通越界询问；
+- 命令执行的 `command/run`/`command/done` 生命周期由平台记录进会话日志（不是裸自定义事件）。
+
 ## 与 auto 插件共存
 
 `renamePresetLabel` 默认 `false`，本插件不再改预设名，与 `@nanmicoder/dsh-auto-mode` 零冲突（也不再需要它的标签补丁）。若显式开启改名，auto 插件按标签匹配权限菜单的逻辑需要自行适配。
@@ -180,10 +196,11 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
 ```sh
 pnpm install && pnpm build        # 类型检查（tsc --noEmit，strict）+ 构建 src/ → lib/（产物入库；改源码后必须重建并随源码同 commit）
 node scripts/verify-scanner.ts   # 词法扫描用例（POSIX + Windows，含误报对照）
+node scripts/verify-allow-command.ts  # /wo-allow 目录解析用例（家目录展开、绝对路径判定、归一化）
 node scripts/check-compat.ts     # 对本机 dsh 安装做契约自检
 ```
 
-实现结构：源码在 `src/`（TypeScript/TSX，strict 类型检查进 build 链）、构建产物在 `lib/`（`pnpm build` 生成，随 git 分发）。`src/host/scanner.ts`（纯词法扫描 + 读写口径 `toolAccessKind` + DSH_HOME 解析，可独立测试）、`src/host/ask.ts`（三键会合点与回退链）、`src/host/approval-compat.ts`（官方审批瀑布封装）、`src/host/session-state.ts`（会话档位三态与审计记录）、`src/host/session-whitelist.ts`（会话级白名单的文件持久化与迁移）、`src/host/remote-service.ts`（client→host 管理 RPC）、`src/host/index.ts`（门禁装配）、`src/client/**`（React TSX 源码：设置页、composer 会话档位选择框、会话页「白名单目录」视图、会话标题栏待审批徽章与父会话行黄点，UI 组件用 `@deepseek-ai/dsh-client-ui-primitives` 的 `Menu`/`Input`/`Button`，与官方权限选择器同款）→ 构建为单文件 `lib/client.js`。
+实现结构：源码在 `src/`（TypeScript/TSX，strict 类型检查进 build 链）、构建产物在 `lib/`（`pnpm build` 生成，随 git 分发）。`src/host/scanner.ts`（纯词法扫描 + 读写口径 `toolAccessKind` + DSH_HOME 解析，可独立测试）、`src/host/ask.ts`（三键会合点与回退链）、`src/host/approval-compat.ts`（官方审批瀑布封装）、`src/host/session-state.ts`（会话档位三态与审计记录）、`src/host/session-whitelist.ts`（会话级白名单的文件持久化与迁移）、`src/host/allow-command.ts`（`/wo-allow` 命令的目录解析，纯函数可独立测试）、`src/host/remote-service.ts`（client→host 管理 RPC）、`src/host/index.ts`（门禁装配）、`src/client/**`（React TSX 源码：设置页、composer 会话档位选择框、会话页「白名单目录」视图、会话标题栏待审批徽章与父会话行黄点，UI 组件用 `@deepseek-ai/dsh-client-ui-primitives` 的 `Menu`/`Input`/`Button`，与官方权限选择器同款）→ 构建为单文件 `lib/client.js`。
 
 ## 升级说明（会话级放飞 → 会话档位）
 

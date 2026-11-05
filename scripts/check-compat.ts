@@ -21,6 +21,9 @@
  *      于此（同档位放行、严格更宽档位阶梯、`ctx.sandboxPolicy` 解析）；
  *  12. `dsh-home-paths` 主目录解析，内置默认白名单依赖于此（非空 `$DSH_HOME`
  *      优先、空值视为未设置、波浪号展开、resolve）。
+ *  15. `dsh-commands` 命令面（T30）：`/wo-allow` 注册依赖 definition 形状
+ *      （`input.hint`/`handler`）、CommandResult 词汇（success/error）与
+ *      `command/run`/`command/done` 生命周期。
  */
 import {closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync} from "node:fs";
 import {homedir} from "node:os";
@@ -289,6 +292,21 @@ function main(): void {
             }
         }
         record(seeded, "shared UI primitive seed", seeded ? void 0 : "no shipped client bundle requests @deepseek-ai/dsh-client-ui-primitives — the shared UI primitives are missing from the frozen module table and the plugin controls cannot resolve them");
+    }
+
+    // 15. dsh-commands 命令面（T30）：`/wo-allow` 走 `commands` 服务注册，
+    //     依赖 definition 形状（`input.hint`/`handler`）、CommandResult 的
+    //     success/error 词汇，以及 `command/run`/`command/done` 生命周期日志
+    //     （平台已知事件，不是裸自定义事件）。
+    {
+        const found = locate("dsh-commands", "lib/index.js", roots);
+        if (found === void 0) {
+            record(false, "command surface (T30)", "dsh-commands not found in any source root — the /wo-allow command registration cannot be verified");
+        } else {
+            const shapes = ['"command/run"', '"command/done"', "rawInput", 'kind: "success"', 'kind: "error"'];
+            const gone = shapes.filter((needle) => !found.text.includes(needle));
+            record(gone.length === 0, "command surface (T30)", gone.length === 0 ? void 0 : `command contract drifted in ${found.origin}: missing ${gone.join(", ")} — re-verify the wo-allow registration in lib/index.js before trusting it`);
+        }
     }
 
     for (const title of passes) console.log(`PASS  ${title}`);

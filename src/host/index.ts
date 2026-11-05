@@ -18,6 +18,7 @@ import {
 } from "./scanner.ts";
 import type {PathEntry, SensitiveConfig, SensitiveHit} from "./scanner.ts";
 import {ensureScopePersisted, rootSessionIdOf, SCOPE, sessionScope, setSessionScope} from "./session-state.ts";
+import {parseAllowDirInput} from "./allow-command.ts";
 import type {ResolveParent, Scope} from "./session-state.ts";
 import {addSessionDir, mergeSessionDirs, readAllSessionEntries, readSessionDirs, removeSessionDir} from "./session-whitelist.ts";
 import type {Context} from "@deepseek-ai/cordis";
@@ -58,7 +59,7 @@ import type {Session} from "@deepseek-ai/dsh-session";
  */
 
 export const name = "workspace-only";
-export const inject = ["permissionPresets", "tools", "settings", "systemPrompt"];
+export const inject = ["permissionPresets", "tools", "settings", "systemPrompt", "commands"];
 
 /** 任务 T4 默认值：工作区内也要询问的文件名模式，及其豁免。 */
 const DEFAULT_SENSITIVE_PATTERNS = ["*.env", "*.env.*", "*.pem", "*.key", "*.p12", "*.pfx", "id_rsa*", "id_ed25519*"];
@@ -362,22 +363,23 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
         await settings.update("workspace-only", patch);
     }
 
-    async function allowAlways(dir: string, session?: Session | undefined): Promise<void> {
+    async function allowAlways(dir: string, session?: Session | undefined): Promise<"session" | "global"> {
         const normalized = String(dir);
         // ask 卡片与会话页的授权绑授权会话的**血缘根**（主会话 id，T20）：
         // 主会话及其子代理共享一批条目，不同主会话互相隔离。T25 起这类条目
         // 持久化到会话白名单文件（`sessions/<血缘根id>/whitelist.json`），
         // 不再写进 Config.always。设置页的授权（无 session）保持全局条目；
         // 解析不到会话时同样降级为全局条目（设置页可见可删），绝不静默写成
-        // 永不生效的孤儿条目。
+        // 永不生效的孤儿条目。返回写入位置，供调用方如实叙述（T30 命令文案）。
         const scoped = rootSessionIdOf(session, resolveParent);
         if (typeof scoped === "string" && scoped !== "") {
             await addSessionDir(scoped, normalized);
-            return;
+            return "session";
         }
         const key = alwaysKey(normalized);
         const next = [...alwaysList().filter((item) => alwaysKey(item) !== key), normalized];
         await writeConfig({always: next});
+        return "global";
     }
 
     /** 任务 T4：持久化一条敏感 pattern（"总是允许此类文件"）。 */
@@ -722,6 +724,37 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
         announce: (requestId) => askFlow.announce(requestId),
         decide: (requestId, choice) => askFlow.decide(requestId, choice),
         pendingList: () => askFlow.pendingList()
+    });
+
+    // T30：输入框命令 `/wo-allow <dir>` —— 把目录加入本会话白名单（与卡片
+    // 「总是允许该目录」同一条写入路径：绑会话血缘根、T25 文件持久化）。走
+    // 平台命令面（`commands` 服务）：注册后自动进 slash 菜单，生命周期
+    // `command/run`/`command/done` 由平台记录（不是裸自定义事件）。fail-closed：
+    // 参数解析失败或写回失败都返回 error，绝不静默放行；deny 与敏感文件
+    // 规则不因白名单放宽。
+    ctx.commands.register({
+        name: "wo-allow",
+        description: "把目录加入本会话白名单（仅本会话及其子代理生效，访问时不再询问）",
+        input: {hint: "<目录绝对路径>"},
+        handler: async (invocation) => {
+            const parsed = parseAllowDirInput(invocation.rawInput);
+            if (parsed.ok !== true) {
+                return parsed.reason === "empty"
+                    ? {kind: "error", text: "用法：/wo-allow <目录绝对路径>（支持 ~、%USERPROFILE% 等家目录写法）"}
+                    : {kind: "error", text: `仅接受绝对路径（家目录写法需可解析）：${invocation.rawInput.trim()}`};
+            }
+            try {
+                const scope = await allowAlways(parsed.dir, invocation.agent.session);
+                return {
+                    kind: "success",
+                    text: scope === "session"
+                        ? `已加入本会话白名单（本会话及其子代理生效）：${parsed.dir}`
+                        : `会话不可解析，已降级加入全局白名单（处处生效）：${parsed.dir}`
+                };
+            } catch (error) {
+                return {kind: "error", text: `加入白名单失败（该目录访问仍会询问）：${error instanceof Error ? error.message : String(error)}`};
+            }
+        }
     });
 
     // T25：启动时把 Config 残留的会话级条目迁往会话白名单文件

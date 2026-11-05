@@ -40,6 +40,7 @@
   "license": "MIT",
   "scripts": {
     "verify-scanner": "node scripts/verify-scanner.ts",
+    "verify-allow-command": "node scripts/verify-allow-command.ts",
     "check-compat": "node scripts/check-compat.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit && vite build -c vite.host.config.ts && vite build -c vite.client.config.ts",
