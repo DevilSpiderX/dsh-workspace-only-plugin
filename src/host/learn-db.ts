@@ -21,9 +21,12 @@ import {createRequire} from "node:module";
 import {desc, eq, like, lt, or} from "drizzle-orm";
 import {drizzle} from "drizzle-orm/node-sqlite";
 import {integer, sqliteTable, text} from "drizzle-orm/sqlite-core";
+import {uuidv7} from "./uuid.ts";
 
 /** 一次命中 × 判决的事件行（细粒度统计的底座）。 */
 export interface HitEvent {
+    /** 主键：uuidv7（时间有序；AGENTS.md「数据库 id 一律 uuidv7」条目）。 */
+    readonly id: string;
     readonly at: number;
     readonly tool: string;
     readonly command: string;
@@ -34,6 +37,8 @@ export interface HitEvent {
     readonly shape: string | null;
     readonly hitReason: string;
     readonly isFocus: boolean;
+    /** dsh 会话 id。 */
+    readonly sessionId: string;
     /** `once`/`always`/`user-denied`/`user-rejected`/`timeout`/`no-channel`/`cancelled`。 */
     readonly verdict: string;
 }
@@ -51,6 +56,8 @@ export interface LearnedFeature {
 
 /** 审批事件行（T36）：**每次弹窗一行**，不论最终通过与否，供事后分析。 */
 export interface ApprovalEvent {
+    /** 主键：uuidv7（时间有序）。 */
+    readonly id: string;
     readonly at: number;
     readonly tool: string;
     readonly command: string;
@@ -67,9 +74,9 @@ export interface ApprovalEvent {
     readonly sessionId: string;
 }
 
-/** 事件表（Drizzle schema，列名与手写 DDL 一一对应）。 */
+/** 事件表（Drizzle schema，列名与 DDL 一一对应；id 主键 = uuidv7）。 */
 const hitEvents = sqliteTable("hit_events", {
-    id: integer("id").primaryKey({autoIncrement: true}),
+    id: text("id").primaryKey(),
     at: integer("at").notNull(),
     tool: text("tool").notNull(),
     command: text("command"),
@@ -79,12 +86,14 @@ const hitEvents = sqliteTable("hit_events", {
     shape: text("shape"),
     hitReason: text("hit_reason").notNull(),
     isFocus: integer("is_focus").notNull(),
+    sessionId: text("session_id"),
     verdict: text("verdict").notNull()
 });
 
-/** 归纳表（Drizzle schema）。 */
+/** 归纳表（Drizzle schema；id 主键 = uuidv7，shape 是 upsert 的业务唯一键）。 */
 const learnedExemptions = sqliteTable("learned_exemptions", {
-    shape: text("shape").primaryKey(),
+    id: text("id").primaryKey(),
+    shape: text("shape").notNull().unique(),
     allowCount: integer("allow_count").notNull().default(0),
     denyCount: integer("deny_count").notNull().default(0),
     timeoutCount: integer("timeout_count").notNull().default(0),
@@ -92,9 +101,9 @@ const learnedExemptions = sqliteTable("learned_exemptions", {
     updatedAt: integer("updated_at").notNull()
 });
 
-/** 审批事件表（Drizzle schema，T36：弹窗即记、不论结果）。 */
+/** 审批事件表（Drizzle schema，T36：弹窗即记、不论结果；id 主键 = uuidv7）。 */
 const approvalEvents = sqliteTable("approval_events", {
-    id: integer("id").primaryKey({autoIncrement: true}),
+    id: text("id").primaryKey(),
     at: integer("at").notNull(),
     tool: text("tool").notNull(),
     command: text("command"),
@@ -108,12 +117,12 @@ const approvalEvents = sqliteTable("approval_events", {
     sessionId: text("session_id")
 });
 
-/** 存储面（`learn.ts` 消费；不可用 stub 与真实现同形）。 */
+/** 存储面（`learn.ts` 消费；不可用 stub 与真实现同形）。id 由存储层生成（uuidv7）。 */
 export interface LearnDb {
     readonly available: boolean;
-    recordHit(event: HitEvent): void;
+    recordHit(event: Omit<HitEvent, "id">): void;
     /** 审批事件：弹窗即记、不论结果（T36）。 */
-    recordApproval(event: ApprovalEvent): void;
+    recordApproval(event: Omit<ApprovalEvent, "id">): void;
     features(): LearnedFeature[];
     /** 归纳写回（upsert 统计列与豁免标记）。 */
     writeFeature(feature: LearnedFeature): void;
@@ -147,10 +156,10 @@ const UNAVAILABLE: LearnDb = {
 
 const SCHEMA_VERSION = 2;
 
-/** 建表 DDL（一次性；日常查询全部走 Drizzle）。 */
+/** 建表 DDL（一次性；日常查询全部走 Drizzle。id 主键一律 uuidv7）。 */
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS hit_events (
-    id INTEGER PRIMARY KEY,
+    id TEXT PRIMARY KEY,
     at INTEGER NOT NULL,
     tool TEXT NOT NULL,
     command TEXT,
@@ -160,12 +169,14 @@ CREATE TABLE IF NOT EXISTS hit_events (
     shape TEXT,
     hit_reason TEXT NOT NULL,
     is_focus INTEGER NOT NULL,
+    session_id TEXT,
     verdict TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_events_shape ON hit_events(shape_sig, at);
 CREATE INDEX IF NOT EXISTS idx_events_time ON hit_events(at);
 CREATE TABLE IF NOT EXISTS learned_exemptions (
-    shape TEXT PRIMARY KEY,
+    id TEXT PRIMARY KEY,
+    shape TEXT NOT NULL UNIQUE,
     allow_count INTEGER NOT NULL DEFAULT 0,
     deny_count INTEGER NOT NULL DEFAULT 0,
     timeout_count INTEGER NOT NULL DEFAULT 0,
@@ -173,7 +184,7 @@ CREATE TABLE IF NOT EXISTS learned_exemptions (
     updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS approval_events (
-    id INTEGER PRIMARY KEY,
+    id TEXT PRIMARY KEY,
     at INTEGER NOT NULL,
     tool TEXT NOT NULL,
     command TEXT,
@@ -188,6 +199,13 @@ CREATE TABLE IF NOT EXISTS approval_events (
 );
 CREATE INDEX IF NOT EXISTS idx_approval_time ON approval_events(at);
 CREATE INDEX IF NOT EXISTS idx_approval_verdict ON approval_events(verdict, at);
+`;
+
+/** 旧版本表清单位置（破坏性重建用）。 */
+const DROP_SQL = `
+DROP TABLE IF EXISTS hit_events;
+DROP TABLE IF EXISTS learned_exemptions;
+DROP TABLE IF EXISTS approval_events;
 `;
 
 /** `node:sqlite` 的 `DatabaseSync` 最小形状（PRAGMA/DDL 面，按用到的收窄）。 */
@@ -215,8 +233,12 @@ export function openLearnDb(path: string): LearnDb {
         const row = raw.prepare("PRAGMA user_version;").get();
         const version = Number(row?.user_version ?? 0);
         if (version > SCHEMA_VERSION) throw new Error(`learn db schema ${version} is newer than ${SCHEMA_VERSION}`);
+        if (version < SCHEMA_VERSION) {
+            // 破坏性更新（用户约定：不做数据迁移）——旧表直接重建。
+            raw.exec(DROP_SQL);
+        }
         raw.exec(SCHEMA_SQL);
-        if (version < SCHEMA_VERSION) raw.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`);
+        raw.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`);
     } catch {
         try {
             raw?.close();
@@ -232,6 +254,7 @@ export function openLearnDb(path: string): LearnDb {
         recordHit(event) {
             try {
                 db.insert(hitEvents).values({
+                    id: uuidv7(),
                     at: event.at,
                     tool: event.tool,
                     command: event.command.slice(0, 2048),
@@ -241,6 +264,7 @@ export function openLearnDb(path: string): LearnDb {
                     shape: event.shape,
                     hitReason: event.hitReason,
                     isFocus: event.isFocus ? 1 : 0,
+                    sessionId: event.sessionId,
                     verdict: event.verdict
                 }).run();
             } catch {
@@ -250,6 +274,7 @@ export function openLearnDb(path: string): LearnDb {
         recordApproval(event) {
             try {
                 db.insert(approvalEvents).values({
+                    id: uuidv7(),
                     at: event.at,
                     tool: event.tool,
                     command: event.command.slice(0, 4096),
@@ -283,6 +308,7 @@ export function openLearnDb(path: string): LearnDb {
         writeFeature(feature) {
             try {
                 db.insert(learnedExemptions).values({
+                    id: uuidv7(),
                     shape: feature.shape,
                     allowCount: feature.allowCount,
                     denyCount: feature.denyCount,
@@ -321,6 +347,7 @@ export function openLearnDb(path: string): LearnDb {
                     .limit(Math.max(1, Math.min(limit, 500)))
                     .all()
                     .map((row) => ({
+                        id: String(row.id),
                         at: row.at,
                         tool: row.tool,
                         command: row.command ?? "",
@@ -330,6 +357,7 @@ export function openLearnDb(path: string): LearnDb {
                         shape: row.shape,
                         hitReason: row.hitReason,
                         isFocus: row.isFocus === 1,
+                        sessionId: row.sessionId ?? "",
                         verdict: row.verdict
                     }));
             } catch {
@@ -345,6 +373,7 @@ export function openLearnDb(path: string): LearnDb {
                     .limit(Math.max(1, Math.min(limit, 500)))
                     .all()
                     .map((row) => ({
+                        id: String(row.id),
                         at: row.at,
                         tool: row.tool,
                         command: row.command ?? "",

@@ -10,6 +10,7 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {createLearnService, decidesExemption, shapeSignature, verdictClass} from "../src/host/learn.ts";
 import type {LearnHitInput} from "../src/host/learn.ts";
+import {UUIDV7_PATTERN} from "../src/host/uuid.ts";
 
 let pass = 0;
 let total = 0;
@@ -48,6 +49,7 @@ const hit = (over: Partial<LearnHitInput> = {}): LearnHitInput => ({
     shape: "regex-literal",
     hitReason: "outside",
     isFocus: true,
+    sessionId: "sess-learn",
     ...over
 });
 
@@ -73,6 +75,8 @@ const hit = (over: Partial<LearnHitInput> = {}): LearnHitInput => ({
     check("feature counters", feature !== void 0 && feature.allowCount === 7 && feature.denyCount === 1 && feature.timeoutCount === 1, JSON.stringify(feature));
     check("search finds events", service.search("awk").length > 0);
     check("search by signature", service.search("pattern-arg").length > 0);
+    const rows = service.search("awk", 5);
+    check("hit id is uuidv7 and session preserved", rows.every((row) => UUIDV7_PATTERN.test(row.id)) && rows.every((row) => row.sessionId === "sess-learn"), JSON.stringify(rows.map((row) => [row.id, row.sessionId])));
     check("removeFeature revokes", service.removeFeature("bash|pattern-arg|regex-literal|single") && !service.isExempt("bash|pattern-arg|regex-literal|single"));
     service.close();
 }
@@ -110,6 +114,7 @@ const hit = (over: Partial<LearnHitInput> = {}): LearnHitInput => ({
     check("approval search by verdict", service.db.searchApprovals("user-denied", 10).length === 1);
     check("approval search by dir", service.db.searchApprovals("/etc", 10).length === 3);
     check("approval fields preserved", all.some((item) => item.verdict === "timeout" && item.ms === 120000 && item.channel === "none"));
+    check("approval id is uuidv7", all.every((item) => UUIDV7_PATTERN.test(item.id)), JSON.stringify(all.map((item) => item.id)));
     service.close();
 }
 

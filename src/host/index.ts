@@ -720,7 +720,8 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
                             role: parts[1] ?? "",
                             shape: parts[2] === void 0 || parts[2] === "plain" ? null : parts[2],
                             hitReason: entry.outside === true ? "outside" : "sensitive",
-                            isFocus: entry.path === focus.path
+                            isFocus: entry.path === focus.path,
+                            sessionId: session?.id ?? ""
                         };
                     });
                 learnService.record(hits, verdictKey);

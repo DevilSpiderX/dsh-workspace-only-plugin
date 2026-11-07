@@ -28,7 +28,7 @@ export interface LearnOptions {
     readonly retentionDays: () => number;
 }
 
-/** 一条命中记账的输入（时间与判决由 {@link LearnService.record} 补齐）。 */
+/** 一条命中记账的输入（时间、判决与 id 由 {@link LearnService.record} 补齐）。 */
 export interface LearnHitInput {
     readonly tool: string;
     readonly command: string;
@@ -38,6 +38,8 @@ export interface LearnHitInput {
     readonly shape: string | null;
     readonly hitReason: string;
     readonly isFocus: boolean;
+    /** dsh 会话 id。 */
+    readonly sessionId: string;
 }
 
 /**
