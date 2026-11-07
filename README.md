@@ -62,6 +62,9 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
 | `scanAllTools` | `false` | 全量保守扫描（opt-in）：白名单 8 工具之外的工具也按参数里的路径形状判定（可能对含路径样文本的参数误报） |
 | `scanIgnoreTools` | `[]` | 保守扫描的工具豁免名单（误报逃生舱） |
 | `realpathCheck` | `false` | realpath 复核（opt-in，T11）：对词法判「工作区内」的路径做一次 `fs.realpath` 复核，工作区内符号链接指向区外时改判越界、照走三键；每条目一次同步 fs 调用（性能代价），解析失败按越界询问（fail-closed） |
+| `learnFromDecisions` | `true` | 无感学习层总开关（T33）：从既有三键判决按形态签名自动归纳豁免，无任何新 UI；详见「无感学习层」 |
+| `learnThreshold` | `3` | 学习层自动豁免的放行阈值（且用户拒绝必须为 0；任何一次用户拒绝立即回撤豁免） |
+| `learnRetentionDays` | `90` | 学习事件（`learn.sqlite3` 的 `hit_events`）保留天数，超期自动压实 |
 
 手动编辑示例（profile 的 `cordis.patch.yml` 追加）：
 
@@ -100,6 +103,35 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
 - 该目录就是 Desktop 把随附 Python/Node/pnpm 分发包安装进去的目标根（宿主 `desktop-host` 的 `root: join(resolveDshHome(), 'dsh-runtimes', 'dsh-primary-runtime')`）；home 解析逐条对齐宿主 `resolveDshHome()`（`@deepseek-ai/dsh-home-paths`）：`$DSH_HOME` **非空白**时以它为准（空白值按未设置处理，`~`/`~/`/`~\` 拼写展开，结果解析为绝对路径），否则回退 `~/.dsh`；条目在**每次判定时**从环境解析，不写死绝对路径、不持久化进 `cordis.patch.yml`，换机器/换用户自动适配（`check-compat.ts` probe 12 盯住该契约的漂移）；
 - 设置页「默认白名单（内置）」分组只读展示**本机解析结果**，不可移除（要收紧请用 deny 规则，它优先级更高）；
 - 只放行**越界维度**：deny 规则仍优先压过它；敏感文件（`sensitivePatterns`）照旧弹三键，与目录白名单正交的语义不变。
+
+## 无感学习层（learn.sqlite3）
+
+**误判治理 + 自主学习**（T32/T33）：shell 命令文本先经语法分析层（`shell-syntax.ts`：引号/注释/重定向/模式参数位的角色标注）切词——正则字面量（`/^\//`、`/^\d+$/`）、注释碎片（`//`、`/*`）、grep/sed/awk 模式参数位按**语法事实**豁免，不再被误判为根目录路径；无法识别的结构一律回落保守词法判定（fail-closed）。硬路径特征（盘符、UNC、`//server/share`、`~/`、`..`）在任何形态下永不豁免。
+
+学习层从**既有三键判决**自动归纳（不新增任何按钮/选项）：
+
+- 每次 ask 的命中按**形态签名**（`工具|角色|形态|引号`，判别维度全保留、绝不泛化到裸 token）记账进 `<DSH_HOME>/dsh-workspace-only-plugin/learn.sqlite3`（`node:sqlite` + Drizzle ORM）；
+- 某签名累计放行 ≥ `learnThreshold` 且**用户拒绝为 0** → 自动豁免（不再触发 outside 询问）；**任何一次用户拒绝立即回撤豁免**，门禁重新收紧；
+- **负样本只认用户 deny**：`user-denied`/`user-rejected` 是用户对形态的判断；超时/无应答/取消（`timeout`/`no-channel`/`cancelled`）是 fail-closed 噪声，只计观察、不回撤、不污染学习；
+- 学习只压掉误报形态的 outside 询问：deny 规则、敏感文件判定、白名单语义一律不受影响；
+- fail-safe：`learn.sqlite3` 损坏或 `node:sqlite` 不可用 = 学习层整体停用（回到保守询问），门禁的 fail-closed 正确性从不依赖学习层；`learnFromDecisions: false` 一键停学；
+- 管理面：Remote `learnedFeatures`/`removeLearnedFeature`/`searchLearned`（模糊搜索 token/命令/签名，调试误判）。
+
+## deny 原因与 agent 感知（T33）
+
+门禁拒绝工具调用时，`reason` 文案与结构化 `info.code`（`workspace-only/<cause>`）按**稳定词汇**区分「用户意志」与「超时/无应答」——使用者的 agent 可据此决定是否重试：
+
+| denyCause | `info.code` | 触发 | agent 语义 |
+|---|---|---|---|
+| `user-denied` | `workspace-only/user-denied` | 面板/问答点击「拒绝」（文案 `the user denied this call`） | 用户意志，**勿重试** |
+| `user-rejected` | `workspace-only/user-rejected` | 官方系统对话框拒绝/取消（`the user rejected this call`） | 用户意志，**勿重试** |
+| `timeout` | `workspace-only/timeout` | 对话框/问答超时无人应答（`approval timed out (fail-closed) …`） | **可重试**，先提醒用户 |
+| `no-channel` | `workspace-only/no-approval-channel` | 无应答通道快速拒绝（T6 fastDeny） | 可重试，先开通道 |
+| `cancelled` | `workspace-only/cancelled` | 调用方在排队/执行前取消 | 调用方自己取消 |
+| （规则） | `workspace-only/deny-rule` | 命中 `deny` 规则 | 规则拒绝，勿重试 |
+| （环境） | `workspace-only/no-agent` | 调用无 agent 上下文 | 环境问题 |
+
+> 词汇是 agent 契约（AGENTS.md「deny 原因词汇与 `info.code` 是 agent 契约」条目）：改文案必须同步 `code` 与文档。超时类 deny **永远 fail-closed**（照拒），细分只影响 agent 的后续行为与学习层的负样本口径。
 
 ## 输入框命令：/wo-allow
 
@@ -196,8 +228,9 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
 
 ```sh
 pnpm install && pnpm build        # 类型检查（tsc --noEmit，strict）+ 构建 src/ → lib/（产物入库；改源码后必须重建并随源码同 commit）
-node scripts/verify-scanner.ts   # 词法扫描用例（POSIX + Windows，含误报对照）
+node scripts/verify-scanner.ts   # 词法扫描用例（POSIX + Windows，含误报对照、语法层改善/回归组）
 node scripts/verify-allow-command.ts  # /wo-allow 目录解析用例（家目录展开、绝对路径判定、归一化）
+node scripts/verify-learn.ts     # 无感学习层用例（判决分类、形态签名、归纳回撤、fail-safe 降级）
 node scripts/verify-session-cleanup.ts  # 孤儿会话白名单目录清理用例（已知 id 集合、宽限期、fail-safe）
 node scripts/check-compat.ts     # 对本机 dsh 安装做契约自检
 ```

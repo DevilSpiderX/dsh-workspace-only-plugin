@@ -22,6 +22,8 @@ import {
     toolAccessKind
 } from "../src/host/scanner.ts";
 import type {SensitiveConfig} from "../src/host/scanner.ts";
+import {classifyShape, isRegexShapedText, parseShellWords} from "../src/host/shell-syntax.ts";
+import type {ShellDialect} from "../src/host/shell-syntax.ts";
 
 const posixRoot = "/Volumes/CBR DATA/项目/dsh-workspace-only-plugin";
 const winRoot = "C:\\work\\project";
@@ -30,7 +32,7 @@ const winRoot = "C:\\work\\project";
  * [command, expected, root?] —— expected 为 "FLAG"（门禁触发）或 "OK"（放行）。
  * Windows 用例只使用合成路径。
  */
-const cases: [string, string, string][] = [
+const cases: [string, string, string, ShellDialect?][] = [
     // --- 既有 POSIX 回归 ---
     ["cat /etc/passwd", "FLAG", posixRoot],
     ["node -e \"console.log(require('fs').readFileSync('/etc/passwd','utf8'))\"", "FLAG", posixRoot],
@@ -104,7 +106,26 @@ const cases: [string, string, string][] = [
     ["cat //server/share/x", "FLAG", winRoot],
     ["tool --out=//server/share/x", "FLAG", winRoot],
     ["echo /*", "FLAG", winRoot],
-    ["grep // /etc/x", "FLAG", winRoot]
+    ["grep // /etc/x", "FLAG", winRoot],
+    // --- 语法层改善组：正则字面量/模式位不是文件访问面（误报 → OK）---
+    ["awk '/^\\// {print}'", "OK", winRoot],
+    ["rg '/^\\d+$/'", "OK", winRoot],
+    ["grep -E '/^\\/x/' src", "OK", winRoot],
+    ["node -e \"s.replace(/^\\s+/, '')\"", "OK", winRoot],
+    ["Select-String -Path src -Pattern '/^\\//' ", "OK", winRoot, "pwsh"],
+    ["awk '/^\\/etc\\/passwd$/'", "OK", winRoot],
+    ["awk '/foo/'", "OK", winRoot],
+    ["grep -E '/^\\/x\\/y/' src", "OK", winRoot],
+    // --- 语法层回归组：绝不放宽硬路径/逃逸/真实目录/内嵌真实路径 ---
+    ["cat /foo/", "FLAG", winRoot],
+    ["cat /usr/bin/", "FLAG", winRoot],
+    ["awk '/etc/passwd'", "FLAG", winRoot],
+    ["bash -c \"cat /etc/x\"", "FLAG", winRoot],
+    ["node -e \"cat('/etc/x')\"", "FLAG", winRoot],
+    ["awk '/x/ /etc/y'", "FLAG", winRoot],
+    ["awk '/^//' /etc/y", "FLAG", winRoot],
+    ["grep '//x' /etc/z", "FLAG", winRoot],
+    ["echo $((1+2))", "OK", winRoot]
 ];
 
 /**
@@ -272,11 +293,49 @@ const slashShapes: [string, boolean][] = [
     ["/foo/bar", false],
     ["src/x", false]
 ];
+/**
+ * 形态分类直测 —— [value, expectedShape]。正则字面量/注释碎片豁免，
+ * 真实路径形态与硬路径特征永不归入豁免形态。
+ */
+const shapeCases: [string, string | undefined][] = [
+    ["/^\\//", "regex-literal"],
+    ["/^\\d+$/", "regex-literal"],
+    ["/foo/", "regex-literal-loose"],
+    ["/etc/x", undefined],
+    ["/usr/bin/", undefined],
+    ["/foo/bar/", undefined],
+    ["//", "comment-slash"],
+    ["/*", undefined],
+    ["C:\\tmp\\x", undefined],
+    ["/etc/passwd", undefined]
+];
+/**
+ * 正则形态文本（内嵌片段）直测 —— [value, expectedRegexShaped]。
+ * 模式体里嵌着裸绝对路径的混合形态不豁免。
+ */
+const regexShapedCases: [string, boolean][] = [
+    ["/^\\//", true],
+    ["/^\\s+,", true],
+    ["/^\\// {print}", true],
+    ["/etc/x", false],
+    ["/x/ /etc/y", false],
+    ["C:\\tmp\\x", false]
+];
+/**
+ * 语法层角色直测 —— [command, dialect, [raw, role] 序列]（过滤操作符词）。
+ */
+const roleCases: [string, ShellDialect, [string, string][]][] = [
+    ["echo hi > out.log", "bash", [["echo", "command"], ["hi", "arg"], ["out.log", "redirect-target"]]],
+    ["FOO=/etc/x node a.js", "bash", [["FOO=/etc/x", "assign-value"], ["node", "command"], ["a.js", "arg"]]],
+    ["awk '/x/' f", "bash", [["awk", "command"], ["'/x/'", "pattern-arg"], ["f", "arg"]]],
+    ["Select-String -Pattern '/x/'", "pwsh", [["Select-String", "command"], ["-Pattern", "arg"], ["'/x/'", "pattern-arg"]]],
+    ["grep x y # tail", "bash", [["grep", "command"], ["x", "pattern-arg"], ["y", "arg"], ["# tail", "comment"]]]
+];
 let pass = 0;
 let total = 0;
-for (const [cmd, expect, root] of cases) {
+for (const [cmd, expect, root, dialect] of cases) {
     total += 1;
-    const got = shellReason(cmd, root) === undefined ? "OK" : "FLAG";
+    const got = shellReason(cmd, root, dialect) === undefined ? "OK" : "FLAG";
     const ok = got === expect;
     if (ok) pass += 1;
     console.log(`${ok ? "PASS" : "FAIL"}  [${expect}] ${cmd}  => ${got}`);
@@ -301,6 +360,29 @@ for (const [value, expected] of slashShapes) {
     const ok = got === expected;
     if (ok) pass += 1;
     console.log(`${ok ? "PASS" : "FAIL"}  slash-shape ${JSON.stringify(value)} => ${got}`);
+}
+for (const [value, expected] of shapeCases) {
+    total += 1;
+    const got = classifyShape(value);
+    const ok = got === expected;
+    if (ok) pass += 1;
+    console.log(`${ok ? "PASS" : "FAIL"}  shape ${JSON.stringify(value)} => ${JSON.stringify(got)}`);
+}
+for (const [value, expected] of regexShapedCases) {
+    total += 1;
+    const got = isRegexShapedText(value);
+    const ok = got === expected;
+    if (ok) pass += 1;
+    console.log(`${ok ? "PASS" : "FAIL"}  regex-shaped ${JSON.stringify(value)} => ${got}`);
+}
+for (const [command, dialect, expected] of roleCases) {
+    total += 1;
+    const got = parseShellWords(command, dialect)
+        .filter((word) => !/^[|;&()<>]+$/.test(word.raw.trim()) && !/^\d+[<>]$|&>>?$/.test(word.raw.trim()))
+        .map((word) => [word.raw, word.role] as [string, string]);
+    const ok = JSON.stringify(got) === JSON.stringify(expected);
+    if (ok) pass += 1;
+    console.log(`${ok ? "PASS" : "FAIL"}  roles ${JSON.stringify(command)} => ${JSON.stringify(got)}`);
 }
 for (const [args, expectedPaths] of genericCases) {
     total += 1;

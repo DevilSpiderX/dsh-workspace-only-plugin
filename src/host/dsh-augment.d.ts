@@ -21,10 +21,16 @@ export interface PreExecuteCall {
     readonly signal?: AbortSignal | undefined;
 }
 
+/** deny 的结构化错误身份（字面复刻 `dsh-tools` 的 `ToolErrorInfo` 最小形状）：`code` 是 agent 可感知的稳定错误码。 */
+export interface PreExecuteErrorInfo {
+    readonly code: string;
+    readonly [key: string]: unknown;
+}
+
 /** pre-execute 的裁决：放行（`next()` 的延续值）或携带原因拒绝。 */
 export type PreExecuteVerdict =
     | {readonly kind: "allow"}
-    | {readonly kind: "deny"; readonly reason?: string | undefined};
+    | {readonly kind: "deny"; readonly reason?: string | undefined; readonly info?: PreExecuteErrorInfo | undefined};
 
 /** 命令 handler 的入参（字面复刻 `dsh-commands` 的 `CommandInvocation`，只声明用到的面）。 */
 export interface CommandInvocation {

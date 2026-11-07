@@ -59,5 +59,8 @@
     "react": "^19",
     "typescript": "^5",
     "vite": "^8.3.5"
+  },
+  "dependencies": {
+    "drizzle-orm": "1.0.0-rc.5"
   }
 }

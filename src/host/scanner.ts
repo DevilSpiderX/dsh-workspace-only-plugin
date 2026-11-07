@@ -1,9 +1,14 @@
 import {homedir, tmpdir} from "node:os";
 import {join, posix, win32} from "node:path";
+import {classifyShape, hasHardPathShape, isRegexShapedText, parseShellWords, shapeSignature} from "./shell-syntax.ts";
+import type {ShellDialect} from "./shell-syntax.ts";
 
 /**
  * Workspace Only 词法路径扫描器 —— 门禁的纯、零依赖核心。这里的一切都是对工具
- * 参数的静态分析：哪些调用引用了会话工作区根之外的路径。
+ * 参数的静态分析：哪些调用引用了会话工作区根之外的路径。shell 命令文本经
+ * `shell-syntax.ts` 的语法层切词（引号/注释/重定向/角色标注），正则字面量与
+ * 模式参数位按语法事实豁免；无法识别的结构一律回落到本文件的保守词法判定
+ * （fail-closed：不确定就当路径候选）。
  *
  * Windows 是一等公民（任务 A）：盘符与 UNC 绝对路径、反斜杠分隔符、`..\` 逃逸
  * 与 POSIX 写法被完全同等地识别，只要任意一侧看起来像 Windows 路径，包含判定
@@ -19,6 +24,8 @@ export interface PathEntry {
     readonly what: string;
     readonly outside: boolean;
     readonly reason?: string;
+    /** 学习层形态签名（仅 shell 词条目携带，见 `shell-syntax.ts` 的 `shapeSignature`）。 */
+    readonly shapeSig?: string | undefined;
 }
 
 /** 一次工具调用的词法输入面（`arguments` 是未校验的 JSON 值，窄化在扫描器内部完成）。 */
@@ -275,28 +282,42 @@ function tokenCandidates(token: string): string[] {
 
 /**
  * 一条 bash/pwsh 命令行引用的全部路径，工作区内与外，按发现顺序（任务 T4 对
- * 全部判定敏感文件名）。
+ * 全部判定敏感文件名）。`dialect` 选择语法方言（`pwsh` 工具走 pwsh 规则）。
+ * 语法层给出的正则字面量/注释/模式位豁免之外，一切回落到保守词法判定。
  */
-export function shellEntries(command: unknown, root: string): PathEntry[] {
+export function shellEntries(command: unknown, root: string, dialect: ShellDialect = "bash"): PathEntry[] {
     const found: PathEntry[] = [];
     if (typeof command !== "string" || command === "") return found;
-    // 任务 T3：不做整条命令的 `$HOME` 拒绝 —— 家目录写法按 token 展开并按真实
-    // 路径判定。单引号 token 是字面字符串（`echo '$HOME'` 打印文本，不引用路径）。
-    for (const token of shellTokens(command)) {
-        const literal = /^'.*'$/s.test(token);
-        for (const candidate of tokenCandidates(token)) {
-            // 反转义之后剥掉重定向前缀（"2>"、"&>>"、">"、"<"）。
+    // 任务 T3：不做整条命令的 `$HOME` 拒绝 —— 家目录写法按词展开并按真实
+    // 路径判定。单引号整词是字面字符串（`echo '$HOME'` 打印文本，不引用路径）。
+    for (const word of parseShellWords(command, dialect)) {
+        if (word.role === "comment") continue;
+        // 保守孪生：去引号保留反斜杠的 raw 形态（Windows 路径完好）与语法层
+        // 的反转义 value 两者都判定 —— 过近似是安全方向。
+        const rawStripped = word.raw.replace(/^["']+|["']+$/g, "");
+        const candidates = rawStripped === word.value ? [word.value] : [word.value, rawStripped];
+        for (const candidate of candidates) {
+            // 剥掉重定向前缀（"2>"、"&>>"、">"、"<"）。
             const t = candidate.replace(/^(?:\d+[<>]|&>>?|[<>]+)/, "");
             if (t === "") continue;
             if (t === "/dev/null" || t.startsWith("/dev/null")) continue;
-            if (!literal) {
+            // 形态豁免：正则字面量、正则形态文本（含内嵌片段）与正则/注释
+            // 斜杠碎片不是文件访问面（硬路径特征已在判定内排除，永不豁免）。
+            // 模式参数位上的 `/…/` 定界（`awk '/foo/'`）同理是模式文本。
+            const shape = classifyShape(t) ?? (t === word.value ? word.shape : void 0);
+            if (shape === "regex-literal" || shape === "comment-slash") continue;
+            const entrySig = shapeSignature({tool: dialect, role: word.role, shape: shape ?? word.shape, quote: word.quote});
+            if (isRegexShapedText(t)) continue;
+            if (word.role === "pattern-arg" && t.startsWith("/") && !hasHardPathShape(t) && !/\s/.test(t) && (t.endsWith("/") || /\/[a-z]{0,3}$/i.test(t))) continue;
+            if (word.quote !== "single") {
                 const expanded = expandHomeSpelling(t);
                 if (expanded !== void 0) {
                     const outside = !lexicallyWithin(expanded, root);
                     found.push({
                         path: expanded,
                         what: "command",
-                        outside, ...outside ? {reason: `command references the user home: \`${token}\``} : {}
+                        shapeSig: entrySig,
+                        outside, ...outside ? {reason: `command references the user home: \`${word.raw}\``} : {}
                     });
                     if (outside) return found;
                     continue;
@@ -308,21 +329,22 @@ export function shellEntries(command: unknown, root: string): PathEntry[] {
                 found.push({
                     path: t,
                     what: "command",
+                    shapeSig: entrySig,
                     outside: true,
-                    reason: `command references the user home: \`${token}\``
+                    reason: `command references the user home: \`${word.raw}\``
                 });
                 return found;
             }
-            // 任务 T15：以正则/注释斜杠片段开头的 token（`//`、`/* comment`、`/\*`）
-            // 是模式文本、不携带路径 —— 整个跳过（否则它的反转义孪生会把片段复活成
-            // UNC 形态的串）。
+            // 任务 T15 回落：正则/注释斜杠片段（`//`、`/* comment`、`/\*`）
+            // 是模式文本、不携带路径。
             if (isRegexOrCommentSlash(t)) continue;
             if (isAbsoluteToken(t)) {
                 const outside = !lexicallyWithin(t, root);
                 found.push({
                     path: t,
                     what: "command",
-                    outside, ...outside ? {reason: `command references a path outside the workspace: \`${token}\``} : {}
+                    shapeSig: entrySig,
+                    outside, ...outside ? {reason: `command references a path outside the workspace: \`${word.raw}\``} : {}
                 });
                 continue;
             }
@@ -331,12 +353,20 @@ export function shellEntries(command: unknown, root: string): PathEntry[] {
                 found.push({
                     path: t,
                     what: "command",
-                    outside, ...outside ? {reason: `command escapes the workspace: \`${token}\``} : {}
+                    shapeSig: entrySig,
+                    outside, ...outside ? {reason: `command escapes the workspace: \`${word.raw}\``} : {}
                 });
             }
+            // 内嵌路径（解释器字符串内容，`node -e "..."` 场景）：模式参数位的
+            // 文本不是文件访问面，跳过；其余照扫（含形态豁免）。
+            if (word.role === "pattern-arg") continue;
             for (const match of t.matchAll(INTERIOR_PATH)) {
                 const path = match[1];
                 if (path === "/dev/null" || path.startsWith("/dev/null")) continue;
+                const innerShape = classifyShape(path);
+                if (innerShape === "regex-literal" || innerShape === "comment-slash") continue;
+                if (isRegexShapedText(path)) continue;
+                const innerSig = shapeSignature({tool: dialect, role: "string-content", shape: innerShape, quote: word.quote});
                 // 内部的家目录写法同样展开；无法解析的保持 fail-safe。
                 const expandedPath = expandHomeSpelling(path);
                 if (expandedPath !== void 0) {
@@ -344,6 +374,7 @@ export function shellEntries(command: unknown, root: string): PathEntry[] {
                     found.push({
                         path: expandedPath,
                         what: "command",
+                        shapeSig: innerSig,
                         outside, ...outside ? {reason: `command references the user home: \`${path}\``} : {}
                     });
                     continue;
@@ -352,6 +383,7 @@ export function shellEntries(command: unknown, root: string): PathEntry[] {
                     found.push({
                         path,
                         what: "command",
+                        shapeSig: innerSig,
                         outside: true,
                         reason: `command references the user home: \`${path}\``
                     });
@@ -361,6 +393,7 @@ export function shellEntries(command: unknown, root: string): PathEntry[] {
                 found.push({
                     path,
                     what: "command",
+                    shapeSig: innerSig,
                     outside, ...outside ? {reason: `command references a path outside the workspace: \`${path}\``} : {}
                 });
             }
@@ -370,18 +403,21 @@ export function shellEntries(command: unknown, root: string): PathEntry[] {
 }
 
 /** bash/pwsh 命令行的工作区外引用，按发现顺序。 */
-export function shellTargets(command: unknown, root: string): PathEntry[] {
-    return shellEntries(command, root).filter((entry) => entry.outside);
+export function shellTargets(command: unknown, root: string, dialect: ShellDialect = "bash"): PathEntry[] {
+    return shellEntries(command, root, dialect).filter((entry) => entry.outside);
 }
 
 /** bash/pwsh 命令行引用工作区外路径时返回原因，否则 undefined。 */
-export function shellReason(command: unknown, root: string): string | undefined {
-    return shellTargets(command, root)[0]?.reason;
+export function shellReason(command: unknown, root: string, dialect: ShellDialect = "bash"): string | undefined {
+    return shellTargets(command, root, dialect)[0]?.reason;
 }
 
-/** 当搜索 pattern 以任意受支持写法是绝对路径或逃逸时返回 true。正则/注释斜杠片段（任务 T15）是模式文本，不是路径。 */
+/** 当搜索 pattern 以任意受支持写法是绝对路径或逃逸时返回 true。正则/注释斜杠片段（任务 T15）与正则形态文本是模式文本，不是路径。 */
 export function isAbsoluteOrEscapingPattern(pattern: string): boolean {
     if (isRegexOrCommentSlash(pattern)) return false;
+    const shape = classifyShape(pattern);
+    if (shape === "regex-literal" || shape === "comment-slash") return false;
+    if (isRegexShapedText(pattern)) return false;
     return pattern.startsWith("/") || HOME_PREFIX.test(pattern) || isAbsoluteToken(pattern) || isEscapeToken(pattern) || DOTDOT_SEGMENT.test(pattern);
 }
 
@@ -414,7 +450,7 @@ export function scanTargets(exec: ToolCall, root: string): PathEntry[] {
     }
     if (SHELL_TOOLS.has(exec.name)) {
         const workdir = args.workdir !== void 0 ? pathEntry(args.workdir, root, `\`${exec.name}\` working directory`) : void 0;
-        const commandTargets = shellEntries(args.command, root);
+        const commandTargets = shellEntries(args.command, root, exec.name === "pwsh" ? "pwsh" : "bash");
         return workdir === void 0 ? commandTargets : [workdir, ...commandTargets];
     }
     return [];

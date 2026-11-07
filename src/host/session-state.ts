@@ -83,6 +83,8 @@ export interface DecisionAuditPayload {
     readonly choice: string;
     readonly label?: string | undefined;
     readonly ms: number;
+    /** deny 细分原因（`user-denied`/`user-rejected`/`timeout`/`no-channel`/`cancelled`）。 */
+    readonly denyCause?: string | undefined;
 }
 
 /** 「总是允许」写入的审计载荷（目录条目或敏感 pattern）。 */

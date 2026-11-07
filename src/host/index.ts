@@ -12,11 +12,14 @@ import {
     isPlatformTempTarget,
     isPreciselyScanned,
     lexicallyWithin,
+    resolveDshHome,
     scanTargets,
     sensitiveMatch,
     toolAccessKind
 } from "./scanner.ts";
 import type {PathEntry, SensitiveConfig, SensitiveHit} from "./scanner.ts";
+import {createLearnService} from "./learn.ts";
+import type {LearnHitInput} from "./learn.ts";
 import {ensureScopePersisted, rootSessionIdOf, SCOPE, sessionScope, setSessionScope} from "./session-state.ts";
 import {parseAllowDirInput} from "./allow-command.ts";
 import {knownSessionIds, pruneOrphanSessionDirs, PRUNE_INTERVAL_MS} from "./session-cleanup.ts";
@@ -118,7 +121,13 @@ export const Config = z.object({
      * 真实目标的符号链接仍被询问。每个引用路径多花一次同步 fs 调用，因此默认关闭
      * （保持围栏纯词法，与 MiMo 的 `AppFileSystem.contains` 一致）。
      */
-    realpathCheck: z.boolean().default(false)
+    realpathCheck: z.boolean().default(false),
+    /** 无感学习层：从三键判决自动归纳形态豁免（无任何新 UI；总开关）。 */
+    learnFromDecisions: z.boolean().default(true),
+    /** 学习层自动豁免的放行阈值（且用户拒绝必须为 0；deny 即回撤）。 */
+    learnThreshold: z.number().step(1).min(2).default(3),
+    /** 学习事件（learn.sqlite3 的 hit_events）保留天数，定期压实。 */
+    learnRetentionDays: z.number().step(1).min(1).default(90)
 });
 
 /**
@@ -139,6 +148,9 @@ export interface PluginConfigInput {
     readonly scanAllTools?: unknown;
     readonly scanIgnoreTools?: unknown;
     readonly realpathCheck?: unknown;
+    readonly learnFromDecisions?: unknown;
+    readonly learnThreshold?: unknown;
+    readonly learnRetentionDays?: unknown;
 }
 
 /** 读取 `.volatile()` 引用（或已是普通值的值）。 */
@@ -562,6 +574,22 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
         }
     });
 
+    // 无感学习层（learn.sqlite3，`learn.ts`/`learn-db.ts`）：从既有三键判决
+    // 按形态签名自动归纳豁免。安全边界与 fail-safe 见 learn.ts 头注释 ——
+    // 门禁的 fail-closed 正确性从不依赖学习层。
+    const learnService = createLearnService(join(resolveDshHome(), "dsh-workspace-only-plugin", "learn.sqlite3"), {
+        enabled: () => readVolatile(config.learnFromDecisions) === true,
+        threshold: () => {
+            const value = readVolatile(config.learnThreshold);
+            return typeof value === "number" ? value : 3;
+        },
+        retentionDays: () => {
+            const value = readVolatile(config.learnRetentionDays);
+            return typeof value === "number" ? value : 90;
+        }
+    });
+    ctx.effect(() => () => learnService.close(), "workspace-only: learn db");
+
     const askFlow = createAskFlow({
         timeoutMs,
         allowAlways,
@@ -604,7 +632,7 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
         // 任务 T5：deny 规则压过一切 —— 升权跳过、会话旁路、主开关、白名单、
         // 平台临时目录豁免。不弹任何提问。
         const denied = entries.map((entry) => denyMatch(entry.path, denyList())).find((rule) => rule !== void 0);
-        if (denied !== void 0) return {kind: "deny", reason: `[workspace-only] denied by deny rule: \`${denied}\``};
+        if (denied !== void 0) return {kind: "deny", reason: `[workspace-only] denied by deny rule: \`${denied}\``, info: {code: "workspace-only/deny-rule"}};
         // 任务 T1：仅当官方升级弹窗有保证时才跳过。重复请求（`sandbox_permissions`
         // 与当前模式相等）在上游是零弹窗放行，因此这里绝不能跳过。
         if (isGuaranteedEscalationPrompt(ctx, session, args)) return next();
@@ -630,7 +658,10 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
         for (const entry of entries) {
             if (isPlatformTempTarget(entry.path)) continue;
             const escaped = entry.outside === true || (recheckRealpath && escapesViaRealpath(entry.path, root));
-            if (escaped && !outsideReadsPass && !alwaysAllows(entry.path, session)) {
+            // 无感学习豁免（形态签名级）：只压掉误报形态的 outside 询问，
+            // deny（更早）与敏感（下方）判定不受影响。
+            const learnedExempt = entry.shapeSig !== void 0 && learnService.isExempt(entry.shapeSig);
+            if (escaped && !outsideReadsPass && !alwaysAllows(entry.path, session) && !learnedExempt) {
                 outside.push(entry.outside === true ? entry : {
                     ...entry,
                     outside: true,
@@ -645,7 +676,7 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
         }
         if (outside.length === 0 && sensitive.length === 0) return next();
         const reason = [...outside.slice(0, 1), ...sensitive.slice(0, 1)].map((entry) => entry.reason).join("；");
-        if (exec.agent === void 0) return {kind: "deny", reason: `[workspace-only] ${reason}`};
+        if (exec.agent === void 0) return {kind: "deny", reason: `[workspace-only] ${reason}`, info: {code: "workspace-only/no-agent"}};
         //（上一行拒绝保证了 `outside`/`sensitive` 非空，`focus` 必然存在。）
         const focus = outside[0] ?? sensitive[0]!;
         noteRecent(directoryOf(focus.path), exec.name);
@@ -663,14 +694,46 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
             sensitive: sensitive.length > 0,
             signal: exec.signal
         });
+        // 无感学习记账：逐条命中写事件、按焦点签名归纳（放行 ≥ 阈值且用户
+        // 拒绝为 0 → 自动豁免；用户拒绝即回撤）。只记真实询问过的判决 ——
+        // 批量放行是白名单语义、不是形态判断。记账异常绝不影响裁决。
+        if (verdict.channel !== CHANNEL.alwaysBatch) {
+            try {
+                const verdictKey = verdict.choice === CHOICE.deny ? verdict.denyCause ?? "user-denied" : verdict.choice;
+                const hits: LearnHitInput[] = [...outside, ...sensitive]
+                    .filter((entry) => entry.shapeSig !== void 0)
+                    .map((entry) => {
+                        const parts = (entry.shapeSig ?? "").split("|");
+                        return {
+                            tool: exec.name,
+                            command: typeof args.command === "string" ? args.command : "",
+                            token: entry.path,
+                            shapeSig: entry.shapeSig ?? "",
+                            role: parts[1] ?? "",
+                            shape: parts[2] === void 0 || parts[2] === "plain" ? null : parts[2],
+                            hitReason: entry.outside === true ? "outside" : "sensitive",
+                            isFocus: entry.path === focus.path
+                        };
+                    });
+                learnService.record(hits, verdictKey);
+            } catch (error) {
+                console.warn("[workspace-only] learn record failed (gate unaffected)", error);
+            }
+        }
         // "仅此一次"与"总是允许该目录"都放行这次调用
         // （后者已经把白名单条目持久化了）。
         if (verdict.choice === CHOICE.once || verdict.choice === CHOICE.always) return {kind: "allow"};
-        if (verdict.channel === CHANNEL.systemDialog) return {
-            kind: "deny",
-            reason: `[workspace-only] the user rejected \`${exec.name}\`: ${reason}`
-        };
-        return {kind: "deny", reason: `[workspace-only] ${reason} — the user denied this call`};
+        // deny 细分（agent 契约，AGENTS.md「deny 原因词汇」条目）：用户意志
+        //（user-denied/user-rejected，勿重试）与超时/无应答（timeout/
+        // no-channel/cancelled，fail-closed、可提醒用户后重试）用稳定词汇区分，
+        // `info.code` 同构（`workspace-only/<cause>`）。
+        const cause = verdict.denyCause ?? "user-denied";
+        const denyText = cause === "user-rejected" ? "the user rejected this call"
+            : cause === "timeout" ? "approval timed out (fail-closed); the user did not respond — ask the user before retrying"
+                : cause === "no-channel" ? "no approval channel is available (fail-closed)"
+                    : cause === "cancelled" ? "the call was cancelled before approval"
+                        : "the user denied this call";
+        return {kind: "deny", reason: `[workspace-only] ${reason} — ${denyText}`, info: {code: `workspace-only/${cause}`}};
     });
 
     // 面向客户端的管理表面（任务 B 与 D）：白名单条目、最近 ask，以及按会话的旁路开关。
@@ -695,6 +758,8 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
                 recent: recentAsks.slice(),
                 renamePresetLabel: config.renamePresetLabel === true,
                 dialogTimeoutMs: timeoutMs(),
+                // 学习层归纳产物（管理面展示与撤销）。
+                learnedFeatures: learnService.features(),
                 // 优先用 Session 对象：继承需要 header 来走父链；裸 id 只降级到实时值。
                 scope: sessionScope(resolveSession(ctx, sessionId) ?? sessionId, resolveParent),
                 sessions
@@ -717,6 +782,11 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
         removeAlways: (entry) => removeAlways(entry).then(() => ({always: mergedAlwaysList()})),
         addDeny: (entry) => addDeny(entry).then(() => ({deny: denyList()})),
         removeDeny: (entry) => removeDeny(entry).then(() => ({deny: denyList()})),
+        learnedFeatures: () => ({features: learnService.features()}),
+        removeLearnedFeature: (shape) => ({removed: learnService.removeFeature(String(shape))}),
+        searchLearned: (query, limit) => ({
+            events: learnService.search(String(query), typeof limit === "number" && Number.isFinite(limit) ? limit : 50)
+        }),
         clearRecent() {
             recentAsks.length = 0;
             return {recent: []};

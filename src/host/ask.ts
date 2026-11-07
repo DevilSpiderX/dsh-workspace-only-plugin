@@ -63,6 +63,28 @@ export const CHANNEL = {
 /** 决策来源通道值。 */
 export type Channel = (typeof CHANNEL)[keyof typeof CHANNEL];
 
+/**
+ * deny 的细分原因（agent 可感知的稳定词汇）：**用户意志**与**超时/无应答**
+ * 绝不混同 —— 前者不应重试，后者是 fail-closed、可在提醒用户后重试。
+ * `info.code`（`workspace-only/<cause>`）与 reason 文案按此表分派（AGENTS.md
+ * 「deny 原因词汇是 agent 契约」条目）。
+ */
+export const DENY_CAUSE = {
+    /** 用户在面板/问答上点击「拒绝」。 */
+    userDenied: "user-denied",
+    /** 用户在官方系统对话框拒绝（含主动取消对话框）。 */
+    userRejected: "user-rejected",
+    /** 对话框/问答超时，无人应答（fail-closed）。 */
+    timeout: "timeout",
+    /** 没有应答通道（T6 fastDeny）。 */
+    noChannel: "no-channel",
+    /** 排队/执行前被调用方取消。 */
+    cancelled: "cancelled"
+} as const;
+
+/** deny 原因值。 */
+export type DenyCause = (typeof DENY_CAUSE)[keyof typeof DENY_CAUSE];
+
 const DEFAULT_TIMEOUT_MS = 120_000;
 /** Host 等待面板 announce 自己的时长，超时后走回退（测试可用环境变量覆盖）。 */
 const PRESENCE_WAIT_MS = (() => {
@@ -103,6 +125,8 @@ export interface AskResult {
     readonly choice: Choice;
     readonly channel: Channel;
     readonly label: string | undefined;
+    /** deny 时必有：用户意志（user-*）与超时/无应答（timeout/no-channel/cancelled）的区分。 */
+    readonly denyCause?: DenyCause | undefined;
 }
 
 /** `createAskFlow` 的运行时钩子（由 index 装配时注入）。 */
@@ -327,9 +351,10 @@ export function createAskFlow({
                 channel: CHANNEL.none,
                 choice: CHOICE.deny,
                 label: LABELS.deny,
-                ms: 0
+                ms: 0,
+                denyCause: DENY_CAUSE.cancelled
             });
-            return {choice: CHOICE.deny, channel: CHANNEL.none, label: LABELS.deny};
+            return {choice: CHOICE.deny, channel: CHANNEL.none, label: LABELS.deny, denyCause: DENY_CAUSE.cancelled};
         }
         // 任务 T2 的队列跟进：排队期间授予的白名单条目已经覆盖了这次调用 ——
         // 按批量放行结算，不弹卡片。两个维度绝不混用（D5）：目录条目从不放行
@@ -352,6 +377,7 @@ export function createAskFlow({
         let choice: Choice = CHOICE.deny;
         let channel: Channel = CHANNEL.none;
         let label: string | undefined = void 0;
+        let denyCause: DenyCause | undefined = void 0;
         // `via` 标记批量放行：白名单写入已经在触发它的那次 ask 上完成，这里只记决策。
         const grant = async (picked: Choice, via: Channel | undefined): Promise<Choice> => {
             if (picked !== CHOICE.always) return picked;
@@ -399,6 +425,11 @@ export function createAskFlow({
             channel = panel.via === CHANNEL.alwaysBatch ? CHANNEL.alwaysBatch : CHANNEL.panel;
             choice = await grant(panel.choice, panel.via);
             label = labelOf(choice);
+            if (choice === CHOICE.deny) denyCause = DENY_CAUSE.userDenied;
+        } else if (panel.kind === "timeout") {
+            denyCause = DENY_CAUSE.timeout;
+        } else if (panel.kind === "aborted") {
+            denyCause = DENY_CAUSE.cancelled;
         } else if (panel.kind === "no-panel") {
             // 2) 通用提问（其他答题 UI），然后 3) 系统对话框。
             // 面板席位在回退期间仍然有效：卡片的迟到决策会撤掉提问并按面板输入处理。
@@ -432,26 +463,44 @@ export function createAskFlow({
                 channel = asked.via === CHANNEL.alwaysBatch ? CHANNEL.alwaysBatch : CHANNEL.panel;
                 choice = await grant(asked.choice, asked.via);
                 label = labelOf(choice);
+                if (choice === CHOICE.deny) denyCause = DENY_CAUSE.userDenied;
             } else if (asked.kind === "answer") {
                 channel = CHANNEL.question;
                 choice = await grant(asked.choice, asked.via);
                 label = labelOf(choice);
+                if (choice === CHOICE.deny) denyCause = DENY_CAUSE.userDenied;
             } else if (asked.kind === "fallback") {
                 if (fast > 0) {
                     // 任务 T6：快速预算内没有应答通道。
                     choice = CHOICE.deny;
                     channel = CHANNEL.fastDeny;
+                    denyCause = DENY_CAUSE.noChannel;
                 } else {
-                    choice = await fallbackToSystemDialog(ctx, agent, session, exec, reason, signal);
-                    channel = choice === CHOICE.once ? CHANNEL.systemDialog : CHANNEL.none;
+                    const verdict = await fallbackToSystemDialog(ctx, agent, session, exec, reason, signal);
+                    choice = verdict.choice;
+                    // 系统对话框通道（拒绝也如实记 system-dialog —— 它与超时
+                    // 的区分由 denyCause 承担，channel 不再混同两者）。
+                    channel = CHANNEL.systemDialog;
+                    denyCause = verdict.denyCause;
                 }
             } else if (fast > 0) {
                 // 任务 T6：提问耗尽了快速预算 —— 快速拒绝。
                 channel = CHANNEL.fastDeny;
+                denyCause = DENY_CAUSE.noChannel;
+            } else {
+                denyCause = DENY_CAUSE.timeout;
             }
         }
-        recordDecision(session, {toolName: exec.name, dir, channel, choice, label, ms: Date.now() - askedAt});
-        return {choice, channel, label};
+        recordDecision(session, {
+            toolName: exec.name,
+            dir,
+            channel,
+            choice,
+            label,
+            ms: Date.now() - askedAt,
+            ...denyCause !== void 0 ? {denyCause} : {}
+        });
+        return {choice, channel, label, ...denyCause !== void 0 ? {denyCause} : {}};
     }
 
     return {askOutside, announce, decide, pendingList, releaseMatching};
@@ -678,10 +727,10 @@ function classifyAskFailure(error: unknown): QuestionOutcome {
     return {kind: "timeout"};
 }
 
-/** 既有行为：在官方 `approval/request` waterfall 上询问。 */
-async function fallbackToSystemDialog(ctx: Context, agent: AskAgent | undefined, session: Session | undefined, exec: AskExec, reason: string, signal: AbortSignal | undefined): Promise<Choice> {
+/** 既有行为：在官方 `approval/request` waterfall 上询问。deny 时携带细分原因。 */
+async function fallbackToSystemDialog(ctx: Context, agent: AskAgent | undefined, session: Session | undefined, exec: AskExec, reason: string, signal: AbortSignal | undefined): Promise<{choice: Choice; denyCause?: DenyCause | undefined}> {
     // 无会话则写不了审批审计（原实现会在 append 处抛出并被 catch 成拒绝）。
-    if (agent === void 0 || session === void 0) return CHOICE.deny;
+    if (agent === void 0 || session === void 0) return {choice: CHOICE.deny, denyCause: DENY_CAUSE.timeout};
     try {
         const outcome = await requestApprovalViaWaterfall(ctx, {
             agent,
@@ -690,8 +739,13 @@ async function fallbackToSystemDialog(ctx: Context, agent: AskAgent | undefined,
             reason: `[workspace-only] ${reason} — approve to allow this one call to access outside the workspace`,
             ...signal !== void 0 ? {signal} : {}
         }, session);
-        return outcome === "allowed-once" ? CHOICE.once : CHOICE.deny;
+        if (outcome === "allowed-once") return {choice: CHOICE.once};
+        // `rejected`/`cancelled` 是用户意志（拒绝/关掉对话框）；`unavailable`
+        // 没有用户意志证据 —— 归超时语义（可提醒用户后重试）。
+        return outcome === "unavailable"
+            ? {choice: CHOICE.deny, denyCause: DENY_CAUSE.timeout}
+            : {choice: CHOICE.deny, denyCause: DENY_CAUSE.userRejected};
     } catch {
-        return CHOICE.deny;
+        return {choice: CHOICE.deny, denyCause: DENY_CAUSE.timeout};
     }
 }
