@@ -60,7 +60,8 @@ export const REMOTE_WIRES = Object.freeze({
     pendingList: Object.freeze([]),
     learnedFeatures: Object.freeze([]),
     removeLearnedFeature: Object.freeze(["shape"]),
-    searchLearned: Object.freeze(["query", "limit"])
+    searchLearned: Object.freeze(["query", "limit"]),
+    searchApprovals: Object.freeze(["query", "limit"])
 } as const);
 
 /** 暴露给 `ctx.remote.workspaceOnly.*` / `workspaceOnly/*` RPC 的 Remote 方法名。 */
@@ -99,6 +100,8 @@ export interface WorkspaceOnlyHooks {
     removeLearnedFeature(shape: string): unknown;
     /** 模糊搜索学习事件（token/命令/签名，供调试误判）。 */
     searchLearned(query: string, limit: number): unknown;
+    /** 模糊搜索审批事件（T36：弹窗即记、不论结果；工具/命令/目录/原因/判决）。 */
+    searchApprovals(query: string, limit: number): unknown;
 }
 
 /** `bindTypertRemote` 产出的冻结 binding（形状按 `dsh-typert-protocol` 字面复刻）。 */
@@ -192,6 +195,10 @@ const WorkspaceOnlyRemoteService = class extends Service {
 
     async searchLearned(query: string, limit: number): Promise<unknown> {
         return this.hooks.searchLearned(query, limit);
+    }
+
+    async searchApprovals(query: string, limit: number): Promise<unknown> {
+        return this.hooks.searchApprovals(query, limit);
     }
 };
 

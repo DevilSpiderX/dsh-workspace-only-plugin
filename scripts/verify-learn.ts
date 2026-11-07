@@ -87,6 +87,32 @@ const hit = (over: Partial<LearnHitInput> = {}): LearnHitInput => ({
     service.close();
 }
 
+// --- 审批事件（T36）：弹窗即记、不论结果，模糊搜索可查 ---
+{
+    const service = createLearnService(join(dir, "learn-approval.sqlite3"), {enabled: () => true, threshold: () => 3, retentionDays: () => 90});
+    const base = {
+        at: Date.now(),
+        tool: "bash",
+        command: "cat /etc/x",
+        dir: "/etc",
+        reason: "command references a path outside the workspace",
+        targets: "[\"/etc/x\"]",
+        sensitive: false,
+        channel: "panel",
+        ms: 1234,
+        sessionId: "sess-1"
+    };
+    service.db.recordApproval({...base, verdict: "once"});
+    service.db.recordApproval({...base, verdict: "user-denied", ms: 50});
+    service.db.recordApproval({...base, verdict: "timeout", channel: "none", ms: 120000});
+    const all = service.db.searchApprovals("cat", 10);
+    check("approval events recorded regardless of outcome", all.length === 3, JSON.stringify(all.map((item) => item.verdict)));
+    check("approval search by verdict", service.db.searchApprovals("user-denied", 10).length === 1);
+    check("approval search by dir", service.db.searchApprovals("/etc", 10).length === 3);
+    check("approval fields preserved", all.some((item) => item.verdict === "timeout" && item.ms === 120000 && item.channel === "none"));
+    service.close();
+}
+
 // --- fail-safe：损坏的 db 降级为不可用 stub（学习丢失、门禁不受影响）---
 {
     const badPath = join(dir, "corrupt.sqlite3");

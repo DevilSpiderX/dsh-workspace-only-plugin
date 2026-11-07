@@ -117,6 +117,10 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
 - fail-safe：`learn.sqlite3` 损坏或 `node:sqlite` 不可用 = 学习层整体停用（回到保守询问），门禁的 fail-closed 正确性从不依赖学习层；`learnFromDecisions: false` 一键停学；
 - 管理面：Remote `learnedFeatures`/`removeLearnedFeature`/`searchLearned`（模糊搜索 token/命令/签名，调试误判）。
 
+### 审批事件记录（learn.sqlite3）
+
+**每次弹窗都记录**（`approval_events` 表），不论最终通过、拒绝还是超时——供事后分析误报与审批行为：时间、工具、命令全文、目标目录、触发原因、命中目标列表、判决（含 deny 细分原因）、通道、裁决耗时、会话 id。批量放行（白名单覆盖、没弹窗）不记录。Remote `searchApprovals` 支持按工具/命令/目录/原因/判决模糊搜索；事件随 `learnRetentionDays` 定期压实。
+
 ## deny 原因与 agent 感知（T33）
 
 门禁拒绝工具调用时，`reason` 文案与结构化 `info.code`（`workspace-only/<cause>`）按**稳定词汇**区分「用户意志」与「超时/无应答」——使用者的 agent 可据此决定是否重试：

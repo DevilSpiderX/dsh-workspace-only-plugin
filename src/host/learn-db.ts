@@ -49,6 +49,24 @@ export interface LearnedFeature {
     readonly updatedAt: number;
 }
 
+/** 审批事件行（T36）：**每次弹窗一行**，不论最终通过与否，供事后分析。 */
+export interface ApprovalEvent {
+    readonly at: number;
+    readonly tool: string;
+    readonly command: string;
+    readonly dir: string;
+    readonly reason: string;
+    /** 本次 ask 的全部命中目标（JSON 数组文本，截断存储）。 */
+    readonly targets: string;
+    readonly sensitive: boolean;
+    /** `once`/`always`/`user-denied`/`user-rejected`/`timeout`/`no-channel`/`cancelled`。 */
+    readonly verdict: string;
+    readonly channel: string;
+    /** 从触发到裁决的毫秒数。 */
+    readonly ms: number;
+    readonly sessionId: string;
+}
+
 /** 事件表（Drizzle schema，列名与手写 DDL 一一对应）。 */
 const hitEvents = sqliteTable("hit_events", {
     id: integer("id").primaryKey({autoIncrement: true}),
@@ -74,15 +92,35 @@ const learnedExemptions = sqliteTable("learned_exemptions", {
     updatedAt: integer("updated_at").notNull()
 });
 
+/** 审批事件表（Drizzle schema，T36：弹窗即记、不论结果）。 */
+const approvalEvents = sqliteTable("approval_events", {
+    id: integer("id").primaryKey({autoIncrement: true}),
+    at: integer("at").notNull(),
+    tool: text("tool").notNull(),
+    command: text("command"),
+    dir: text("dir").notNull(),
+    reason: text("reason"),
+    targets: text("targets"),
+    sensitive: integer("sensitive").notNull().default(0),
+    verdict: text("verdict").notNull(),
+    channel: text("channel").notNull(),
+    ms: integer("ms").notNull(),
+    sessionId: text("session_id")
+});
+
 /** 存储面（`learn.ts` 消费；不可用 stub 与真实现同形）。 */
 export interface LearnDb {
     readonly available: boolean;
     recordHit(event: HitEvent): void;
+    /** 审批事件：弹窗即记、不论结果（T36）。 */
+    recordApproval(event: ApprovalEvent): void;
     features(): LearnedFeature[];
     /** 归纳写回（upsert 统计列与豁免标记）。 */
     writeFeature(feature: LearnedFeature): void;
     removeFeature(shape: string): boolean;
     search(query: string, limit: number): HitEvent[];
+    /** 审批事件的模糊搜索（工具/命令/目录/原因）。 */
+    searchApprovals(query: string, limit: number): ApprovalEvent[];
     /** 事件保留期压实（`at` 早于 `olderThanMs` 的行删除）。 */
     prune(olderThanMs: number): void;
     close(): void;
@@ -93,18 +131,21 @@ const UNAVAILABLE: LearnDb = {
     available: false,
     recordHit: () => {
     },
+    recordApproval: () => {
+    },
     features: () => [],
     writeFeature: () => {
     },
     removeFeature: () => false,
     search: () => [],
+    searchApprovals: () => [],
     prune: () => {
     },
     close: () => {
     }
 };
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 /** 建表 DDL（一次性；日常查询全部走 Drizzle）。 */
 const SCHEMA_SQL = `
@@ -131,6 +172,22 @@ CREATE TABLE IF NOT EXISTS learned_exemptions (
     exempt INTEGER NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS approval_events (
+    id INTEGER PRIMARY KEY,
+    at INTEGER NOT NULL,
+    tool TEXT NOT NULL,
+    command TEXT,
+    dir TEXT NOT NULL,
+    reason TEXT,
+    targets TEXT,
+    sensitive INTEGER NOT NULL DEFAULT 0,
+    verdict TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    ms INTEGER NOT NULL,
+    session_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_approval_time ON approval_events(at);
+CREATE INDEX IF NOT EXISTS idx_approval_verdict ON approval_events(verdict, at);
 `;
 
 /** `node:sqlite` 的 `DatabaseSync` 最小形状（PRAGMA/DDL 面，按用到的收窄）。 */
@@ -188,6 +245,25 @@ export function openLearnDb(path: string): LearnDb {
                 }).run();
             } catch {
                 // 单行写失败只丢这一条统计。
+            }
+        },
+        recordApproval(event) {
+            try {
+                db.insert(approvalEvents).values({
+                    at: event.at,
+                    tool: event.tool,
+                    command: event.command.slice(0, 4096),
+                    dir: event.dir,
+                    reason: event.reason.slice(0, 2048),
+                    targets: event.targets.slice(0, 4096),
+                    sensitive: event.sensitive ? 1 : 0,
+                    verdict: event.verdict,
+                    channel: event.channel,
+                    ms: event.ms,
+                    sessionId: event.sessionId
+                }).run();
+            } catch {
+                // 单行写失败只丢这一条事件。
             }
         },
         features() {
@@ -260,9 +336,35 @@ export function openLearnDb(path: string): LearnDb {
                 return [];
             }
         },
+        searchApprovals(query, limit) {
+            try {
+                const needle = `%${query.replace(/[%_]/g, " ")}%`;
+                return db.select().from(approvalEvents)
+                    .where(or(like(approvalEvents.tool, needle), like(approvalEvents.command, needle), like(approvalEvents.dir, needle), like(approvalEvents.reason, needle), like(approvalEvents.verdict, needle)))
+                    .orderBy(desc(approvalEvents.at))
+                    .limit(Math.max(1, Math.min(limit, 500)))
+                    .all()
+                    .map((row) => ({
+                        at: row.at,
+                        tool: row.tool,
+                        command: row.command ?? "",
+                        dir: row.dir,
+                        reason: row.reason ?? "",
+                        targets: row.targets ?? "[]",
+                        sensitive: row.sensitive === 1,
+                        verdict: row.verdict,
+                        channel: row.channel,
+                        ms: row.ms,
+                        sessionId: row.sessionId ?? ""
+                    }));
+            } catch {
+                return [];
+            }
+        },
         prune(olderThanMs) {
             try {
                 db.delete(hitEvents).where(lt(hitEvents.at, olderThanMs)).run();
+                db.delete(approvalEvents).where(lt(approvalEvents.at, olderThanMs)).run();
             } catch {
                 // 压实失败下轮再来。
             }

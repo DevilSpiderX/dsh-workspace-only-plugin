@@ -109,9 +109,18 @@ importers:
 
   .:
     dependencies:
+      '@lumis-sh/wasm-bash':
+        specifier: ^0.26.7
+        version: 0.26.7
+      '@lumis-sh/wasm-powershell':
+        specifier: ^0.26.6
+        version: 0.26.6
       drizzle-orm:
         specifier: 1.0.0-rc.5
         version: 1.0.0-rc.5(zod@4.4.3)
+      web-tree-sitter:
+        specifier: ^0.27.1
+        version: 0.27.1
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: 4.0.5
@@ -408,6 +417,22 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [win32]
+
+  '@lumis-sh/wasm-bash@0.26.7':
+    resolution: {integrity: sha512-7trWhHl432vzhyftdwu5wTCl6n50SrjYkTkwNLJKa0exje7D2mrHFU4iQjyrFXvOP0bYiCfCSWmTOn4YF6HanA==}
+    peerDependencies:
+      '@lumis-sh/lumis': '>=0.9.0'
+    peerDependenciesMeta:
+      '@lumis-sh/lumis':
+        optional: true
+
+  '@lumis-sh/wasm-powershell@0.26.6':
+    resolution: {integrity: sha512-tgcPo0AXWHVvB2Gt5ZMy3emjUvTu1uOy1j//45erh29aCstkG0F+6NjQmBiYHbBMwiCU4u+Y6DgVO4ckaFPAEw==}
+    peerDependencies:
+      '@lumis-sh/lumis': '>=0.9.0'
+    peerDependenciesMeta:
+      '@lumis-sh/lumis':
+        optional: true
 
   '@oxc-project/types@0.155.0':
     resolution: {integrity: sha512-SeE8JPwW1xs1tHeNycjUtUBdhorRa8o4jlvjwk49R7/Z291i+4DQa7JJIgOm/TaYQZx+QrPQbVJ/9c8dMIZN8Q==}
@@ -859,6 +884,9 @@ packages:
       yaml:
         optional: true
 
+  web-tree-sitter@0.27.1:
+    resolution: {integrity: sha512-qtx0VyUyNRHtL3ze7+v0hCKB/sLcAmY7ZAVp/ZK/bCj0yED8ptvNrr7Vd7DwDyKDWN9baqcUx4uaD2r2ql+6IA==}
+
   zod@4.4.3:
     resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
 
@@ -1037,6 +1065,10 @@ snapshots:
 
   '@esbuild/win32-x64@0.28.2':
     optional: true
+
+  '@lumis-sh/wasm-bash@0.26.7': {}
+
+  '@lumis-sh/wasm-powershell@0.26.6': {}
 
   '@oxc-project/types@0.155.0': {}
 
@@ -1248,5 +1280,7 @@ snapshots:
       '@types/node': 22.20.5
       esbuild: 0.28.2
       fsevents: 2.3.3
+
+  web-tree-sitter@0.27.1: {}
 
   zod@4.4.3: {}

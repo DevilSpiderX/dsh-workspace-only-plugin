@@ -4,13 +4,22 @@
  * （`/^\//`）、注释碎片、模式参数位不再靠词法启发式硬猜，而是由
  * 引号/注释/重定向/命令边界的语法事实直接给出。
  *
- * 失败方向永远保守（fail-closed）：任何无法识别的结构都会退化成
- * 普通 `arg` 词，由 `scanner.ts` 的既有词法判定继续按路径候选处理。
- * 本层只提供"确定的豁免"（正则/注释/模式位）与"确定的角色"
- * （重定向目标/赋值值），绝不引入新的放行方向。
+ * 数据源（T35）：**web-tree-sitter 真语法树**为主 —— grammar 是
+ * `@lumis-sh/wasm-bash` / `@lumis-sh/wasm-powershell` 的预编译 wasm，
+ * 随包分发在 `vendor/`（插件安装不跑 install，wasm 必须随仓库走）。
+ * 解析器未就绪、加载失败、解析抛错时**回落内置词法切词**（下方
+ * `WordScanner`）——失败方向永远保守（fail-closed）：任何无法识别的
+ * 结构都退化成普通 `arg` 词，由 `scanner.ts` 的既有词法判定继续按
+ * 路径候选处理。本层只提供"确定的豁免"（正则/注释/模式位）与
+ * "确定的角色"（重定向目标/赋值值），绝不引入新的放行方向。
  *
- * 零依赖、纯函数、可独立测（verify-scanner.ts 直测）。
+ * 纯函数面（classifyShape/isRegexShapedText/shapeSignature）与数据源
+ * 解耦，`verify-scanner.ts`/`tests/` 的用例对两条数据源一视同仁。
  */
+import {existsSync} from "node:fs";
+import {join} from "node:path";
+import {fileURLToPath} from "node:url";
+import {Language, Parser} from "web-tree-sitter";
 
 /** 方言：DSH 的两个 shell 工具。 */
 export type ShellDialect = "bash" | "pwsh";
@@ -23,7 +32,7 @@ export type WordRole =
     | "arg"
     /** 重定向目标（`> x`、`2>> y`）——必然是路径。 */
     | "redirect-target"
-    /** 赋值值（`FOO=/etc/x` 的 `/etc/x` 侧，T7）。 */
+    /** 赋值值（`FOO=/etc/x` 的整词形态，T7）。 */
     | "assign-value"
     /** 模式参数位（grep 的 PATTERN、sed 脚本、`-Pattern` 值……）——正则/模式文本。 */
     | "pattern-arg"
@@ -128,18 +137,242 @@ const BASH_PATTERN_COMMANDS: ReadonlySet<string> = new Set([
     "grep", "egrep", "fgrep", "rg", "ag", "ack", "sed", "awk", "findstr", "perl", "look", "sngrep"
 ]);
 
-/** 命令名归一化：`/usr/bin/grep`、`sudo` 不处理——只取 basename（保守）。 */
+/** 命令名归一化：`/usr/bin/grep` —— 只取 basename（保守）。 */
 function commandBasename(name: string): string {
     const parts = name.split(/[\\/]/);
     return parts[parts.length - 1] ?? name;
 }
 
+/**
+ * 形态签名（学习层的归纳键，`learn.ts` 消费）：`工具|角色|形态|引号` ——
+ * 判别维度全部保留、绝不泛化到裸 token。签名级豁免只压掉误报形态的
+ * outside 询问，deny/敏感/硬路径照常。
+ */
+export function shapeSignature(input: {tool: string; role: string; shape: string | null | undefined; quote: string}): string {
+    return `${input.tool}|${input.role}|${input.shape ?? "plain"}|${input.quote}`;
+}
+
+// ============================ tree-sitter 数据源 ============================
+
+/** `web-tree-sitter` 语法树节点的最小形状（按用到的面收窄）。 */
+interface TreeNode {
+    readonly type: string;
+    readonly startIndex: number;
+    readonly endIndex: number;
+    readonly namedChildren: readonly TreeNode[];
+    readonly children: readonly TreeNode[];
+    childForFieldName(name: string): TreeNode | null;
+    fieldNameForChild(index: number): string | null;
+}
+
+interface ParserInstance {
+    setLanguage(language: unknown): void;
+    parse(source: string): {rootNode: TreeNode};
+}
+
+interface LoadedParsers {
+    bash: ParserInstance;
+    pwsh: ParserInstance;
+}
+
+let parserPromise: Promise<LoadedParsers | undefined> | undefined;
+let parsers: LoadedParsers | undefined;
+
+/**
+ * 定位 `vendor/`（wasm 随包分发）：源码直跑（`src/host/`）与产物
+ * （`lib/`）两种布局都找，向上最多四级。
+ */
+function vendoredWasmDir(): string | undefined {
+    let dir = fileURLToPath(new URL(".", import.meta.url));
+    for (let depth = 0; depth < 4; depth += 1) {
+        if (existsSync(join(dir, "vendor", "tree-sitter-bash.wasm"))) return join(dir, "vendor");
+        const parent = join(dir, "..");
+        if (parent === dir) break;
+        dir = parent;
+    }
+    return void 0;
+}
+
+/**
+ * 初始化解析器（幂等；失败返回 undefined = 走词法回落）。`index.ts`
+ * 在插件装配时预热，扫描热路径同步读 {@link parsers}。
+ */
+export function initSyntaxParsers(): Promise<LoadedParsers | undefined> {
+    if (parserPromise === void 0) {
+        parserPromise = (async () => {
+            try {
+                const vendor = vendoredWasmDir();
+                if (vendor === void 0) return void 0;
+                await Parser.init({locateFile: () => join(vendor, "web-tree-sitter.wasm")});
+                const [bashLang, pwshLang] = await Promise.all([
+                    Language.load(join(vendor, "tree-sitter-bash.wasm")),
+                    Language.load(join(vendor, "tree-sitter-powershell.wasm"))
+                ]);
+                const bash = new Parser() as unknown as ParserInstance;
+                bash.setLanguage(bashLang);
+                const pwsh = new Parser() as unknown as ParserInstance;
+                pwsh.setLanguage(pwshLang);
+                parsers = {bash, pwsh};
+                return parsers;
+            } catch {
+                // 加载失败 = 永久走词法回落（保守方向）。
+                return void 0;
+            }
+        })();
+    }
+    return parserPromise;
+}
+
+/** 去引号 + 反转义（与词法回落的 value 语义对齐）。 */
+function unquoteValue(raw: string, dialect: ShellDialect): string {
+    const stripped = raw.replace(/^["']+|["']+$/g, "");
+    if (dialect === "pwsh") {
+        return stripped.replace(/""/g, "\"").replace(/`(.)/g, "$1");
+    }
+    return stripped.replace(/\\(.)/g, "$1");
+}
+
+/** 引号形态：单引号字面量优先。 */
+function quoteOf(raw: string): ShellWord["quote"] {
+    if (raw.startsWith("'")) return "single";
+    if (raw.startsWith("\"")) return "double";
+    return "none";
+}
+
+/** 按树节点组装一个词（raw=源切片，value=去引号反转义）。 */
+function wordFrom(source: string, node: TreeNode, role: WordRole, dialect: ShellDialect): ShellWord {
+    const raw = source.slice(node.startIndex, node.endIndex);
+    const value = unquoteValue(raw, dialect);
+    const shape = role === "comment" ? void 0 : classifyShape(value) ?? classifyShape(raw);
+    return {raw, value, quote: quoteOf(raw), role, ...shape !== void 0 ? {shape} : {}};
+}
+
+/** bash 的 argument 角色状态（模式位/选项值吞掉）。 */
+interface BashArgState {
+    commandName: string;
+    bareIndex: number;
+    pendingOptionValue: boolean;
+}
+
+function bashArgumentRole(text: string, state: BashArgState): WordRole {
+    if (text.startsWith("-")) {
+        if (/^--?[A-Za-z0-9][-A-Za-z0-9]*$/.test(text)) state.pendingOptionValue = true;
+        return "arg";
+    }
+    if (state.pendingOptionValue) {
+        state.pendingOptionValue = false;
+        return "arg";
+    }
+    if (state.bareIndex === 0 && state.commandName !== "" && BASH_PATTERN_COMMANDS.has(commandBasename(state.commandName))) {
+        state.bareIndex += 1;
+        return "pattern-arg";
+    }
+    state.bareIndex += 1;
+    return "arg";
+}
+
+/** 从 bash 语法树提取词（字段驱动：name/argument/destination/整词赋值）。 */
+function bashWords(root: TreeNode, source: string): ShellWord[] {
+    const out: ShellWord[] = [];
+    const state: BashArgState = {commandName: "", bareIndex: 0, pendingOptionValue: false};
+    const visit = (node: TreeNode): void => {
+        if (node.type === "comment") {
+            out.push(wordFrom(source, node, "comment", "bash"));
+            return;
+        }
+        if (node.type === "file_redirect") {
+            const destination = node.childForFieldName("destination");
+            if (destination !== null) out.push(wordFrom(source, destination, "redirect-target", "bash"));
+            return;
+        }
+        if (node.type === "variable_assignment") {
+            // 整词（`FOO=/etc/x`）与词法回落同形；INTERIOR 仍扫 `=` 值侧。
+            out.push(wordFrom(source, node, "assign-value", "bash"));
+            return;
+        }
+        if (node.type === "command") {
+            state.commandName = "";
+            state.bareIndex = 0;
+            state.pendingOptionValue = false;
+            const children = node.children;
+            for (let index = 0; index < children.length; index += 1) {
+                const child = children[index];
+                const field = node.fieldNameForChild(index);
+                if (field === "name") {
+                    const word = wordFrom(source, child, "command", "bash");
+                    state.commandName = word.value;
+                    out.push(word);
+                } else if (field === "argument") {
+                    const role = bashArgumentRole(source.slice(child.startIndex, child.endIndex), state);
+                    out.push(wordFrom(source, child, role, "bash"));
+                }
+            }
+            // command 内部的赋值前缀等仍递归（变量赋值在 children 里）。
+            for (const child of node.namedChildren) {
+                if (child.type === "variable_assignment") visit(child);
+            }
+            return;
+        }
+        for (const child of node.namedChildren) visit(child);
+    };
+    visit(root);
+    out.sort((a, b) => a.raw.length - b.raw.length || 0);
+    // 按源位置稳定排序（visit 顺序已近似有序，这里按 raw 首次出现位兜底）。
+    return out.sort((a, b) => source.indexOf(a.raw) - source.indexOf(b.raw));
+}
+
+/** 从 pwsh 语法树提取词（command_name/command_parameter/command_elements）。 */
+function pwshWords(root: TreeNode, source: string): ShellWord[] {
+    const out: ShellWord[] = [];
+    const visit = (node: TreeNode): void => {
+        if (node.type === "comment") {
+            out.push(wordFrom(source, node, "comment", "pwsh"));
+            return;
+        }
+        if (node.type === "command") {
+            const name = node.childForFieldName("command_name");
+            if (name !== null) out.push(wordFrom(source, name, "command", "pwsh"));
+            const elements = node.childForFieldName("command_elements");
+            if (elements !== null) {
+                let lastParam = "";
+                for (const child of elements.namedChildren) {
+                    if (child.type === "command_parameter") {
+                        const match = /^[-/]([A-Za-z][A-Za-z0-9]*)/.exec(source.slice(child.startIndex, child.endIndex));
+                        lastParam = match === null ? "" : match[1].toLowerCase();
+                        out.push(wordFrom(source, child, "arg", "pwsh"));
+                        continue;
+                    }
+                    if (child.type === "command_argument_sep") continue;
+                    const role = PWSH_PATTERN_PARAMS.has(lastParam) ? "pattern-arg" : "arg";
+                    lastParam = "";
+                    out.push(wordFrom(source, child, role, "pwsh"));
+                }
+            }
+            return;
+        }
+        for (const child of node.namedChildren) visit(child);
+    };
+    visit(root);
+    return out.sort((a, b) => source.indexOf(a.raw) - source.indexOf(b.raw));
+}
+
+/** tree-sitter 路径：解析失败抛错，由 {@link parseShellWords} 回落词法。 */
+function astWords(command: string, dialect: ShellDialect): ShellWord[] {
+    const ready = parsers;
+    if (ready === void 0) throw new Error("tree-sitter parsers are not ready");
+    const tree = (dialect === "pwsh" ? ready.pwsh : ready.bash).parse(command);
+    return dialect === "pwsh" ? pwshWords(tree.rootNode, command) : bashWords(tree.rootNode, command);
+}
+
+// ============================ 词法回落数据源 ============================
+
 /** bash 的控制操作符（命令边界）。 */
 const BASH_CONTROL = ["||", "&&", ";;", "|", ";", "&", "(", ")"];
 
 /**
- * 一次词法切分的游标状态机。引号/转义/注释/操作符在此一次性处理，
- * 角色按"命令边界 → 重定向 → 赋值 → 模式位 → arg"的顺序判定。
+ * 词法切分的游标状态机（tree-sitter 未就绪/失败时的回落）。引号/转义/
+ * 注释/操作符在此一次性处理，角色按"命令边界 → 重定向 → 赋值 →
+ * 模式位 → arg"的顺序判定。
  */
 class WordScanner {
     private readonly source: string;
@@ -393,19 +626,15 @@ class WordScanner {
 }
 
 /**
- * 把一条 bash/pwsh 命令切成带角色标注的词。永不抛错、永不返回
- * 不完整信息：无法识别的结构按普通词输出（保守方向）。
+ * 把一条 bash/pwsh 命令切成带角色标注的词。**tree-sitter 语法树优先**，
+ * 词法回落兜底；两条数据源都永不抛错、永不返回不完整信息 ——
+ * 无法识别的结构按普通词输出（保守方向）。
  */
 export function parseShellWords(command: string, dialect: ShellDialect = "bash"): ShellWord[] {
     if (typeof command !== "string" || command === "") return [];
-    return new WordScanner(command, dialect).scan();
-}
-
-/**
- * 形态签名（学习层的归纳键，`learn.ts` 消费）：`工具|角色|形态|引号` ——
- * 判别维度全部保留、绝不泛化到裸 token。签名级豁免只压掉误报形态的
- * outside 询问，deny/敏感/硬路径照常。
- */
-export function shapeSignature(input: {tool: string; role: string; shape: string | null | undefined; quote: string}): string {
-    return `${input.tool}|${input.role}|${input.shape ?? "plain"}|${input.quote}`;
+    try {
+        return astWords(command, dialect);
+    } catch {
+        return new WordScanner(command, dialect).scan();
+    }
 }

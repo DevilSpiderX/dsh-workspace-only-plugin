@@ -20,6 +20,7 @@ import {
 import type {PathEntry, SensitiveConfig, SensitiveHit} from "./scanner.ts";
 import {createLearnService} from "./learn.ts";
 import type {LearnHitInput} from "./learn.ts";
+import {initSyntaxParsers} from "./shell-syntax.ts";
 import {ensureScopePersisted, rootSessionIdOf, SCOPE, sessionScope, setSessionScope} from "./session-state.ts";
 import {parseAllowDirInput} from "./allow-command.ts";
 import {knownSessionIds, pruneOrphanSessionDirs, PRUNE_INTERVAL_MS} from "./session-cleanup.ts";
@@ -590,6 +591,10 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
     });
     ctx.effect(() => () => learnService.close(), "workspace-only: learn db");
 
+    // 语法层预热（T35）：tree-sitter wasm 异步加载，就绪前扫描自动走词法
+    // 回落；失败永久回落（保守方向），这里只负责尽早热身。
+    void initSyntaxParsers();
+
     const askFlow = createAskFlow({
         timeoutMs,
         allowAlways,
@@ -621,6 +626,7 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
     // 然后 deny 规则（优先级最高），然后会话档位（任务 D），然后主开关，然后
     // always 白名单，然后三键提问及其系统对话框回退。
     ctx.on("tools/pre-execute", async (exec, next) => {
+        const gateStartedAt = Date.now();
         const args = exec.arguments ?? {};
         const session = exec.agent?.session;
         const root = session?.header?.cwd;
@@ -697,6 +703,8 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
         // 无感学习记账：逐条命中写事件、按焦点签名归纳（放行 ≥ 阈值且用户
         // 拒绝为 0 → 自动豁免；用户拒绝即回撤）。只记真实询问过的判决 ——
         // 批量放行是白名单语义、不是形态判断。记账异常绝不影响裁决。
+        // T36 审批事件：**弹窗即记、不论结果**（通过/拒绝/超时全记，
+        // `approval_events` 表），供事后分析误报与审批行为。
         if (verdict.channel !== CHANNEL.alwaysBatch) {
             try {
                 const verdictKey = verdict.choice === CHOICE.deny ? verdict.denyCause ?? "user-denied" : verdict.choice;
@@ -716,6 +724,19 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
                         };
                     });
                 learnService.record(hits, verdictKey);
+                learnService.db.recordApproval({
+                    at: gateStartedAt,
+                    tool: exec.name,
+                    command: typeof args.command === "string" ? args.command : "",
+                    dir: directoryOf(focus.path),
+                    reason,
+                    targets: JSON.stringify([...outside, ...sensitive].map((entry) => entry.path)),
+                    sensitive: sensitive.length > 0,
+                    verdict: verdictKey,
+                    channel: verdict.channel,
+                    ms: Date.now() - gateStartedAt,
+                    sessionId: session?.id ?? ""
+                });
             } catch (error) {
                 console.warn("[workspace-only] learn record failed (gate unaffected)", error);
             }
@@ -786,6 +807,9 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
         removeLearnedFeature: (shape) => ({removed: learnService.removeFeature(String(shape))}),
         searchLearned: (query, limit) => ({
             events: learnService.search(String(query), typeof limit === "number" && Number.isFinite(limit) ? limit : 50)
+        }),
+        searchApprovals: (query, limit) => ({
+            events: learnService.db.searchApprovals(String(query), typeof limit === "number" && Number.isFinite(limit) ? limit : 50)
         }),
         clearRecent() {
             recentAsks.length = 0;
