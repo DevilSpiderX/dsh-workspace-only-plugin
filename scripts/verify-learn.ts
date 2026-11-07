@@ -8,6 +8,8 @@
 import {mkdtempSync, writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
+import {fileURLToPath} from "node:url";
+import {Migrator} from "@wuyuchentr/database-migration-tool";
 import {createLearnService, decidesExemption, shapeSignature, verdictClass} from "../src/host/learn.ts";
 import type {LearnHitInput} from "../src/host/learn.ts";
 import {UUIDV7_PATTERN} from "../src/host/uuid.ts";
@@ -56,6 +58,7 @@ const hit = (over: Partial<LearnHitInput> = {}): LearnHitInput => ({
 // --- 闭环：放行到阈值自动豁免；用户拒绝立即回撤；超时只观察不回撤 ---
 {
     const service = createLearnService(join(dir, "learn.sqlite3"), {enabled: () => true, threshold: () => 3, retentionDays: () => 90});
+    await service.ready;
     service.record([hit()], "once");
     service.record([hit()], "once");
     check("below threshold still asks", !service.isExempt("bash|pattern-arg|regex-literal|single"));
@@ -84,6 +87,7 @@ const hit = (over: Partial<LearnHitInput> = {}): LearnHitInput => ({
 // --- 开关关闭：不记账 ---
 {
     const service = createLearnService(join(dir, "learn-off.sqlite3"), {enabled: () => false, threshold: () => 3, retentionDays: () => 90});
+    await service.ready;
     service.record([hit()], "once");
     service.record([hit()], "once");
     service.record([hit()], "once");
@@ -94,6 +98,7 @@ const hit = (over: Partial<LearnHitInput> = {}): LearnHitInput => ({
 // --- 审批事件（T36）：弹窗即记、不论结果，模糊搜索可查 ---
 {
     const service = createLearnService(join(dir, "learn-approval.sqlite3"), {enabled: () => true, threshold: () => 3, retentionDays: () => 90});
+    await service.ready;
     const base = {
         at: Date.now(),
         tool: "bash",
@@ -118,11 +123,31 @@ const hit = (over: Partial<LearnHitInput> = {}): LearnHitInput => ({
     service.close();
 }
 
+// --- Flyway 式迁移（T38）：首次建库、幂等重开、迁移历史 ---
+{
+    const dbPath = join(dir, "learn-migrate.sqlite3");
+    const first = createLearnService(dbPath, {enabled: () => true, threshold: () => 3, retentionDays: () => 90});
+    await first.ready;
+    check("migrations applied on first open", first.db.available === true);
+    first.db.recordHit({...hit(), at: Date.now(), verdict: "once"});
+    first.close();
+    const second = createLearnService(dbPath, {enabled: () => true, threshold: () => 3, retentionDays: () => 90});
+    await second.ready;
+    check("reopen is idempotent and keeps data", second.db.available && second.db.search("awk", 5).length === 1, JSON.stringify(second.db.search("awk", 5).map((row) => row.token)));
+    second.close();
+    const migrator = new Migrator({driver: "sqlite", database: dbPath, directory: fileURLToPath(new URL("../migrations", import.meta.url)), table: "_migrations"});
+    await migrator.connect();
+    const status = await migrator.status();
+    await migrator.disconnect();
+    check("migration history recorded in _migrations", status.length === 1 && status[0].executed === true && status[0].name === "0001_init", JSON.stringify(status));
+}
+
 // --- fail-safe：损坏的 db 降级为不可用 stub（学习丢失、门禁不受影响）---
 {
     const badPath = join(dir, "corrupt.sqlite3");
     writeFileSync(badPath, "this is not a sqlite database", "utf8");
     const service = createLearnService(badPath, {enabled: () => true, threshold: () => 3, retentionDays: () => 90});
+    await service.ready;
     check("corrupt db => unavailable stub", service.db.available === false);
     service.record([hit()], "once");
     check("unavailable stub swallows writes", service.features().length === 0 && !service.isExempt("bash|pattern-arg|regex-literal|single"));

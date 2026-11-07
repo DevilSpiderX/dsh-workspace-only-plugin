@@ -121,6 +121,8 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
 
 **每次弹窗都记录**（`approval_events` 表），不论最终通过、拒绝还是超时——供事后分析误报与审批行为：时间、工具、命令全文、目标目录、触发原因、命中目标列表、判决（含 deny 细分原因）、通道、裁决耗时、会话 id。批量放行（白名单覆盖、没弹窗）不记录。Remote `searchApprovals` 支持按工具/命令/目录/原因/判决模糊搜索；事件随 `learnRetentionDays` 定期压实。
 
+schema 演进走 **Flyway 式版本化迁移**（`migrations/` 目录的 up/down SQL 成对文件 + `_migrations` 历史表，启动时自动应用）：结构变更留痕可回查，破坏性变更直接写在迁移里（数据可丢弃、不做兼容迁移）。
+
 ## deny 原因与 agent 感知（T33）
 
 门禁拒绝工具调用时，`reason` 文案与结构化 `info.code`（`workspace-only/<cause>`）按**稳定词汇**区分「用户意志」与「超时/无应答」——使用者的 agent 可据此决定是否重试：

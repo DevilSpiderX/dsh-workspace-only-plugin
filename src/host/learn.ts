@@ -12,8 +12,8 @@
  * 安全边界：学习只产生"降误判"豁免（形态签名级），永不触碰 deny 规则、
  * 敏感判定、硬路径特征与白名单语义；一切不确定回落保守询问（fail-safe）。
  */
-import {openLearnDb} from "./learn-db.ts";
-import type {HitEvent, LearnDb, LearnedFeature} from "./learn-db.ts";
+import {openLearnDb, UNAVAILABLE} from "./learn-db.ts";
+import type {ApprovalEvent, HitEvent, LearnDb, LearnedFeature} from "./learn-db.ts";
 import {shapeSignature} from "./shell-syntax.ts";
 
 export {shapeSignature};
@@ -67,8 +67,12 @@ export function decidesExemption(feature: Pick<LearnedFeature, "allowCount" | "d
 /** 学习服务（index 装配；`isExempt` 是 pre-execute 热路径的同步查询）。 */
 export interface LearnService {
     readonly db: LearnDb;
+    /** 存储就绪（Flyway 迁移完成）；就绪前 record/recordApproval 排队、绝不丢。 */
+    readonly ready: Promise<void>;
     /** 一次 ask 结算后记账：逐条目写事件 + 按焦点签名归纳。 */
     record(hits: readonly LearnHitInput[], verdict: string): void;
+    /** 审批事件：弹窗即记、不论结果（T36；就绪前排队）。 */
+    recordApproval(event: Omit<ApprovalEvent, "id">): void;
     /** 该签名是否已学为豁免（内存缓存）。 */
     isExempt(signature: string): boolean;
     features(): LearnedFeature[];
@@ -78,23 +82,40 @@ export interface LearnService {
 }
 
 /**
- * 创建学习服务：打开 `learn.sqlite3`（失败=不可用 stub，学习不持久）、
- * 加载归纳缓存。热路径（`isExempt`）零 SQL。
+ * 创建学习服务：异步打开 `learn.sqlite3`（Flyway 迁移 + 查询连接，失败=
+ * 不可用 stub，学习不持久）、加载归纳缓存。就绪前的记账进队列、就绪后
+ * 统一补写（审批事件"弹窗即记"不因启动竞态丢失）；热路径（`isExempt`）零 SQL。
  */
 export function createLearnService(dbPath: string, options: LearnOptions): LearnService {
-    const db = openLearnDb(dbPath);
+    let db: LearnDb = UNAVAILABLE;
     const cache = new Map<string, LearnedFeature>();
-    for (const feature of db.features()) cache.set(feature.shape, feature);
+    const pending: Array<() => void> = [];
+    let ready = false;
+    const flush = (): void => {
+        ready = true;
+        for (const op of pending.splice(0)) op();
+    };
+    const readyPromise: Promise<void> = openLearnDb(dbPath).then((opened) => {
+        db = opened;
+        for (const feature of db.features()) cache.set(feature.shape, feature);
+        flush();
+    }, () => {
+        flush();
+    });
     return {
-        db,
+        get db(): LearnDb {
+            return db;
+        },
+        ready: readyPromise,
         record(hits, verdict) {
-            // 开关关闭或持久层不可用（损坏/缺 node:sqlite）都不学习 ——
-            // fail-safe：学习状态不完整时回到保守询问，绝不半学半用。
-            if (options.enabled() !== true || !db.available) return;
-            const at = Date.now();
-            for (const hit of hits) {
-                db.recordHit({...hit, at, verdict});
-            }
+            const op = (): void => {
+                // 开关关闭或持久层不可用（损坏/缺 node:sqlite）都不学习 ——
+                // fail-safe：学习状态不完整时回到保守询问，绝不半学半用。
+                if (options.enabled() !== true || !db.available) return;
+                const at = Date.now();
+                for (const hit of hits) {
+                    db.recordHit({...hit, at, verdict});
+                }
             // 归因以焦点条目为主（卡片展示的就是它）。
             const focus = hits.find((hit) => hit.isFocus) ?? hits[0];
             if (focus === void 0) return;
@@ -122,6 +143,15 @@ export function createLearnService(dbPath: string, options: LearnOptions): Learn
             cache.set(next.shape, next);
             db.writeFeature(next);
             db.prune(at - options.retentionDays() * 86_400_000);
+            };
+            if (ready) op(); else pending.push(op);
+        },
+        recordApproval(event) {
+            const op = (): void => {
+                if (!db.available) return;
+                db.recordApproval(event);
+            };
+            if (ready) op(); else pending.push(op);
         },
         isExempt(signature) {
             return cache.get(signature)?.exempt === true;

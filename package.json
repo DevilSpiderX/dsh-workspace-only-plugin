@@ -20,6 +20,7 @@
   "files": [
     "lib",
     "vendor",
+    "migrations",
     "cordis.patch.yml",
     "README.md",
     "scripts",
@@ -65,6 +66,7 @@
   "dependencies": {
     "@lumis-sh/wasm-bash": "^0.26.7",
     "@lumis-sh/wasm-powershell": "^0.26.6",
+    "@wuyuchentr/database-migration-tool": "1.0.0",
     "drizzle-orm": "1.0.0-rc.5",
     "web-tree-sitter": "^0.27.1"
   }

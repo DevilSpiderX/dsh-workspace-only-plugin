@@ -725,7 +725,7 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
                         };
                     });
                 learnService.record(hits, verdictKey);
-                learnService.db.recordApproval({
+                learnService.recordApproval({
                     at: gateStartedAt,
                     tool: exec.name,
                     command: typeof args.command === "string" ? args.command : "",

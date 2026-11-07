@@ -13,14 +13,23 @@
  * `lib/` 产物（external 白名单只有 `node:` 与 `@deepseek-ai/*`）——插件安装
  * 走 git 源不跑 install，运行时依赖必须随产物分发。
  *
- * 失败方向 fail-safe：`node:sqlite`/drizzle 加载失败或 db 打不开/损坏 →
- * 返回不可用 stub（学习不持久、门禁照常保守询问）。学习层是优化器，
- * 门禁的 fail-closed 正确性**从不**依赖它。
+ * 失败方向 fail-safe：`node:sqlite`/drizzle/迁移器加载失败、迁移失败或
+ * db 打不开/损坏 → 返回不可用 stub（学习不持久、门禁照常保守询问）。
+ * 学习层是优化器，门禁的 fail-closed 正确性**从不**依赖它。
+ *
+ * schema 演进走 **Flyway 式迁移**（`@wuyuchentr/database-migration-tool`）：
+ * 版本化 SQL 文件（`migrations/<timestamp>_<name>.up.sql`/`.down.sql`）+
+ * `_migrations` 历史表，启动时应用 pending 迁移；破坏性约定落在迁移
+ * 文件内容里（允许 DROP 重建、不做数据迁移）。
  */
+import {existsSync} from "node:fs";
 import {createRequire} from "node:module";
+import {join} from "node:path";
+import {fileURLToPath} from "node:url";
 import {desc, eq, like, lt, or} from "drizzle-orm";
 import {drizzle} from "drizzle-orm/node-sqlite";
 import {integer, sqliteTable, text} from "drizzle-orm/sqlite-core";
+import {Migrator} from "@wuyuchentr/database-migration-tool";
 import {uuidv7} from "./uuid.ts";
 
 /** 一次命中 × 判决的事件行（细粒度统计的底座）。 */
@@ -136,7 +145,7 @@ export interface LearnDb {
 }
 
 /** 不可用 stub：一切操作静默成功/空集 —— 学习不持久，门禁不受影响。 */
-const UNAVAILABLE: LearnDb = {
+export const UNAVAILABLE: LearnDb = {
     available: false,
     recordHit: () => {
     },
@@ -154,60 +163,6 @@ const UNAVAILABLE: LearnDb = {
     }
 };
 
-const SCHEMA_VERSION = 2;
-
-/** 建表 DDL（一次性；日常查询全部走 Drizzle。id 主键一律 uuidv7）。 */
-const SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS hit_events (
-    id TEXT PRIMARY KEY,
-    at INTEGER NOT NULL,
-    tool TEXT NOT NULL,
-    command TEXT,
-    token TEXT NOT NULL,
-    shape_sig TEXT NOT NULL,
-    role TEXT NOT NULL,
-    shape TEXT,
-    hit_reason TEXT NOT NULL,
-    is_focus INTEGER NOT NULL,
-    session_id TEXT,
-    verdict TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_events_shape ON hit_events(shape_sig, at);
-CREATE INDEX IF NOT EXISTS idx_events_time ON hit_events(at);
-CREATE TABLE IF NOT EXISTS learned_exemptions (
-    id TEXT PRIMARY KEY,
-    shape TEXT NOT NULL UNIQUE,
-    allow_count INTEGER NOT NULL DEFAULT 0,
-    deny_count INTEGER NOT NULL DEFAULT 0,
-    timeout_count INTEGER NOT NULL DEFAULT 0,
-    exempt INTEGER NOT NULL DEFAULT 0,
-    updated_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS approval_events (
-    id TEXT PRIMARY KEY,
-    at INTEGER NOT NULL,
-    tool TEXT NOT NULL,
-    command TEXT,
-    dir TEXT NOT NULL,
-    reason TEXT,
-    targets TEXT,
-    sensitive INTEGER NOT NULL DEFAULT 0,
-    verdict TEXT NOT NULL,
-    channel TEXT NOT NULL,
-    ms INTEGER NOT NULL,
-    session_id TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_approval_time ON approval_events(at);
-CREATE INDEX IF NOT EXISTS idx_approval_verdict ON approval_events(verdict, at);
-`;
-
-/** 旧版本表清单位置（破坏性重建用）。 */
-const DROP_SQL = `
-DROP TABLE IF EXISTS hit_events;
-DROP TABLE IF EXISTS learned_exemptions;
-DROP TABLE IF EXISTS approval_events;
-`;
-
 /** `node:sqlite` 的 `DatabaseSync` 最小形状（PRAGMA/DDL 面，按用到的收窄）。 */
 interface RawSqlite {
     exec(sql: string): void;
@@ -216,29 +171,47 @@ interface RawSqlite {
 }
 
 /**
- * 打开（或创建）学习库。任何失败（`node:sqlite`/drizzle 缺席、db 损坏、
- * 迁移失败）都返回 {@link UNAVAILABLE} —— fail-safe：宁可失去学习，
- * 绝不影响门禁。损坏的 db 会重建（学习状态清空 = 回到保守询问，可接受）。
+ * 定位 `migrations/`（版本化 SQL，随包分发）：源码直跑（`src/host/`）与
+ * 产物（`lib/`）两种布局都找，向上最多四级。
  */
-export function openLearnDb(path: string): LearnDb {
+function migrationsDir(): string | undefined {
+    let dir = fileURLToPath(new URL(".", import.meta.url));
+    for (let depth = 0; depth < 4; depth += 1) {
+        if (existsSync(join(dir, "migrations", "0001_init.up.sql"))) return join(dir, "migrations");
+        const parent = join(dir, "..");
+        if (parent === dir) break;
+        dir = parent;
+    }
+    return void 0;
+}
+
+/**
+ * 打开（或创建）学习库。任何失败（`node:sqlite`/drizzle 缺席、迁移失败、
+ * db 损坏）都返回 {@link UNAVAILABLE} —— fail-safe：宁可失去学习，
+ * 绝不影响门禁。
+ *
+ * schema 演进走 Flyway 式迁移（`migrations/` 版本化 SQL + `_migrations`
+ * 历史表，启动时应用 pending 迁移）；破坏性约定写在迁移文件内容里。
+ */
+export async function openLearnDb(path: string): Promise<LearnDb> {
+    // 1) 迁移（独立连接，跑完即关，与下方查询连接串行）。
+    try {
+        const directory = migrationsDir();
+        if (directory === void 0) return UNAVAILABLE;
+        const migrator = new Migrator({driver: "sqlite", database: path, directory, table: "_migrations"});
+        await migrator.connect();
+        await migrator.up();
+        await migrator.disconnect();
+    } catch {
+        return UNAVAILABLE;
+    }
+    // 2) 查询连接（Drizzle + node:sqlite；失败=UNAVAILABLE）。
     let raw: RawSqlite | undefined;
     try {
-        // `createRequire` + 同步 require：`node:sqlite` 是内置模块，保持打开
-        // 路径同步（scanner 热路径零 await）；缺席的运行时（旧 Node / web
-        // profile）抛错即降级。
         const nodeRequire = createRequire(import.meta.url);
         const sqlite = nodeRequire("node:sqlite") as {DatabaseSync: new (path: string) => RawSqlite};
         raw = new sqlite.DatabaseSync(path);
         raw.exec("PRAGMA journal_mode = WAL;");
-        const row = raw.prepare("PRAGMA user_version;").get();
-        const version = Number(row?.user_version ?? 0);
-        if (version > SCHEMA_VERSION) throw new Error(`learn db schema ${version} is newer than ${SCHEMA_VERSION}`);
-        if (version < SCHEMA_VERSION) {
-            // 破坏性更新（用户约定：不做数据迁移）——旧表直接重建。
-            raw.exec(DROP_SQL);
-        }
-        raw.exec(SCHEMA_SQL);
-        raw.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`);
     } catch {
         try {
             raw?.close();
