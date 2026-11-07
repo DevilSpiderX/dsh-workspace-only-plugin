@@ -6,7 +6,8 @@ DeepSeek Harness (dsh) 0.2.x 插件：在工具层把任意沙箱模式下的文
 
 ```sh
 pnpm install                      # 装 vite/react/typescript 开发依赖（pnpm-lock.yaml 入库）
-pnpm typecheck                    # tsc --noEmit（strict）；pnpm build 已含此步
+pnpm test                         # 单点测试（node:test，tests/*.test.ts；单跑一个：node --test --test-name-pattern="<名字>" "tests/*.test.ts"）
+pnpm typecheck                    # tsc --noEmit（strict，含 tests/）；pnpm build 已含此步
 pnpm build                        # tsc --noEmit && src/host + src/client → lib/（产物入库，与 src/ 同 commit）；两侧都走 build.minify:"oxc" 全量压缩（与官方 tsdown 产物同形态，不为看守保留字面形态）
 node scripts/verify-scanner.ts   # 词法扫描用例（POSIX+Windows），直测 src/host/scanner.ts，不依赖构建与本机 dsh
 node scripts/verify-allow-command.ts   # /wo-allow 目录解析用例，直测 src/host/allow-command.ts，不依赖构建与本机 dsh
@@ -18,6 +19,7 @@ node tmp/smoke/run.mjs            # 端到端 smoke（stub dsh 包 + 真 schemas
 ```
 
 - 改 `src/host/scanner.ts` 或 shell 扫描行为 → 必跑 `verify-scanner.ts`，新用例加进它的 `cases` 数组。
+- 改 `src/host/**` 纯函数语义 → 跑 `pnpm test`（node:test 单点测试）。**tests/ 与 verify-\* 分工**：`tests/` 是函数级单点断言（快速、可 `--test-name-pattern` 单跑），`scripts/verify-*.ts` 是命令/集成级契约看守（AGENTS 各条目钉的"必跑"不变）——两层用例都补，别只补一边。
 - 改 `src/host/allow-command.ts`（`/wo-allow` 目录解析）→ 必跑 `verify-allow-command.ts`，新用例加进它的 `cases` 数组。
 - 改 `src/host/learn.ts` / `learn-db.ts` / `shell-syntax.ts`（无感学习层与语法分析层）→ 必跑 `verify-learn.ts` 与 `verify-scanner.ts`；学习豁免的**方向锁**（只降误判、用户拒绝即回撤、硬路径特征不可学、损坏即停学）是安全契约，回归必须全绿。
 - 改 `src/host/session-cleanup.ts`（孤儿会话白名单目录清理）→ 必跑 `verify-session-cleanup.ts`，新用例加进它的检查序列。
@@ -56,6 +58,7 @@ node tmp/smoke/run.mjs            # 端到端 smoke（stub dsh 包 + 真 schemas
 | `src/client/**` | Web 端 UI 源码（TSX；`index.tsx` 装配 `apply`/`inject`，见下） |
 | `lib/` | **构建产物**（`pnpm build` 生成，入库 git、与 `src/` 同 commit）：host 多文件（`preserveModules`，含 Drizzle 内联 chunk）+ `client.js` bundle |
 | `scripts/` | 自检脚本（随 npm 包发布，`package.json.files` 已包含） |
+| `tests/` | 单点测试（`node:test` 直跑 TS，函数级；`pnpm test`，tsconfig 纳管） |
 | `docs/` | 任务书与迁移记录，**已入库** |
 | `tmp/` | gitignored 工作区：smoke、探针、`commit-msg.txt` |
 

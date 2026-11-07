@@ -39,6 +39,7 @@
   },
   "license": "MIT",
   "scripts": {
+    "test": "node --test \"tests/*.test.ts\"",
     "verify-scanner": "node scripts/verify-scanner.ts",
     "verify-allow-command": "node scripts/verify-allow-command.ts",
     "check-compat": "node scripts/check-compat.ts",

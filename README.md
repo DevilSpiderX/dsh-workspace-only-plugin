@@ -228,6 +228,7 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
 
 ```sh
 pnpm install && pnpm build        # 类型检查（tsc --noEmit，strict）+ 构建 src/ → lib/（产物入库；改源码后必须重建并随源码同 commit）
+pnpm test                         # 单点测试（node:test，tests/*.test.ts，函数级；单跑一个：--test-name-pattern="<名字>"）
 node scripts/verify-scanner.ts   # 词法扫描用例（POSIX + Windows，含误报对照、语法层改善/回归组）
 node scripts/verify-allow-command.ts  # /wo-allow 目录解析用例（家目录展开、绝对路径判定、归一化）
 node scripts/verify-learn.ts     # 无感学习层用例（判决分类、形态签名、归纳回撤、fail-safe 降级）

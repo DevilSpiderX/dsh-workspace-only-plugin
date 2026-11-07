@@ -15,5 +15,5 @@
         "skipLibCheck": true,
         "forceConsistentCasingInFileNames": true
     },
-    "include": ["src", "scripts", "vite.host.config.ts", "vite.client.config.ts"]
+    "include": ["src", "scripts", "tests", "vite.host.config.ts", "vite.client.config.ts"]
 }
