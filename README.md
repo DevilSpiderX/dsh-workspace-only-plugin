@@ -6,9 +6,9 @@ DeepSeek Harness (dsh) 插件：把**任何沙箱模式**（read-only / workspac
 
 - **全局开关**（`Config.enabled`）：开启后，越出工作区的 `read`/`write`/`edit`/`read_image`/`glob`/`grep`/`bash`/`pwsh` 调用都会停下来问用户；关闭则完全不干预。
 - **三键裁决**（`仅此一次 / 总是允许该目录 / 拒绝`）：
-  - 越界调用触发时，输入栏被一张**三键卡片接管**——与 dsh 权限提升面板同款形态（警示条 + 工具/目标路径/原因 + 按钮行），`Enter`=仅此一次、`Esc`=拒绝；警示条行尾带**倒计时**（剩余秒数，初值 `Config.dialogTimeoutMs`，单位秒；纯展示，不参与裁决）；
+  - 越界调用触发时，输入栏被一张**三键卡片接管**——与 dsh 权限提升面板同款形态（警示条 + 工具/目标路径/原因 + 按钮行），`Enter`=仅此一次、`Esc`=拒绝；警示条行尾带**倒计时**（剩余秒数，初值 `Config.dialogTimeoutMs`，单位秒；纯展示，不参与裁决）；**一次调用命中多条路径时按目标逐张询问**——每个目标一张卡、独立裁决（判决归因干净到单个目标）；
   - **总是允许该目录** → 目录写入**会话级**白名单条目（session=授权会话的血缘根主会话 id，仅本会话及其子代理生效、不同主会话互相隔离；持久化到 `<DSH_HOME>/dsh-workspace-only-plugin/sessions/<主会话id>/whitelist.json`，**不进** profile 的 `cordis.patch.yml`），同目录后续直接放行；
-  - **拒绝 / 超时**（`Config.dialogTimeoutMs`，默认 120s）→ 拒绝该次调用；
+  - **拒绝 / 超时**（`Config.dialogTimeoutMs`，默认 120s）→ 拒绝该目标；命令是原子的，**任一目标拒绝/超时则整个调用 fail-closed 拒绝**，全部目标放行才执行；
   - **同一会话的并发询问逐张排队**（子代理并行工具调用就是同会话并发）：一次只出现一张卡片，答完这张才轮到下一张，不会出现「点了不关」（多张卡片挤占同一渲染席位）；排队中的调用若已被新写入的白名单条目覆盖，出队时直接放行（等效批量放行），不再弹卡；
   - **子代理的询问会在「N 个子智能体」下拉旁亮「待审批 N」徽章**（黄点 + 计数，悬停列出各请求的会话与目标路径，点击跳到该子代理——卡片就在它的输入栏），并在**父会话的会话行**上亮「待审批」黄点（平台 pending 投影，任何视图下都可见；结算即消退）——用户在会话列表即可发现「这个主会话有子代理在等确认」。徽章只出现在这些询问的**父会话**（无关会话不显示），应答或 `askDone` 结算后即时递减消退；
   - 无 Web 客户端（卡片未现身）→ 回退通用问题卡片（`ctx.userQuestions`，TUI 等）→ 再回退官方 `approval/request` 弹窗（与旧版行为一致，**依然绕过 `never` 策略**，Full access 会话也弹）；完全没有应答渠道时拒绝（fail closed）。
@@ -110,7 +110,7 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
 
 学习层从**既有三键判决**自动归纳（不新增任何按钮/选项）：
 
-- 每次 ask 的命中按**形态签名**（`工具|角色|形态|引号`，判别维度全保留、绝不泛化到裸 token）记账进 `<DSH_HOME>/dsh-workspace-only-plugin/learn.sqlite3`（`node:sqlite` + Drizzle ORM）；
+- 每次 ask 的命中按**形态签名**（五段 `工具|命令|角色|形态|引号`，判别维度全保留、绝不泛化到裸 token；命令段是路径词所属命令的归一名，空串=不可知）记账进 `<DSH_HOME>/dsh-workspace-only-plugin/learn.sqlite3`（`node:sqlite` + Drizzle ORM）；
 - 某签名累计放行 ≥ `learnThreshold` 且**用户拒绝为 0** → 自动豁免（不再触发 outside 询问）；**任何一次用户拒绝立即回撤豁免**，门禁重新收紧；
 - **负样本只认用户 deny**：`user-denied`/`user-rejected` 是用户对形态的判断；超时/无应答/取消（`timeout`/`no-channel`/`cancelled`）是 fail-closed 噪声，只计观察、不回撤、不污染学习；
 - 学习只压掉误报形态的 outside 询问：deny 规则、敏感文件判定、白名单语义一律不受影响；

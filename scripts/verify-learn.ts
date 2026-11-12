@@ -31,9 +31,10 @@ check("verdict timeout => other-deny（不计负样本）", verdictClass("timeou
 check("verdict no-channel => other-deny（不计负样本）", verdictClass("no-channel") === "other-deny");
 check("verdict cancelled => other-deny（不计负样本）", verdictClass("cancelled") === "other-deny");
 
-// --- 形态签名：判别维度全保留 ---
-check("signature keeps dimensions", shapeSignature({tool: "bash", role: "pattern-arg", shape: "regex-literal", quote: "single"}) === "bash|pattern-arg|regex-literal|single");
-check("signature null shape => plain", shapeSignature({tool: "pwsh", role: "arg", shape: null, quote: "none"}) === "pwsh|arg|plain|none");
+// --- 形态签名（五段：工具|命令|角色|形态|引号）：判别维度全保留 ---
+check("signature keeps dimensions", shapeSignature({tool: "bash", command: "awk", role: "pattern-arg", shape: "regex-literal", quote: "single"}) === "bash|awk|pattern-arg|regex-literal|single");
+check("signature null shape => plain", shapeSignature({tool: "pwsh", command: "get-childitem", role: "arg", shape: null, quote: "none"}) === "pwsh|get-childitem|arg|plain|none");
+check("signature unknown command => empty segment", shapeSignature({tool: "pwsh", role: "arg", shape: "regex-escape", quote: "single"}) === "pwsh||arg|regex-escape|single");
 
 // --- 归纳判定 ---
 check("exempt at threshold with zero deny", decidesExemption({allowCount: 3, denyCount: 0}, 3));
@@ -46,7 +47,8 @@ const hit = (over: Partial<LearnHitInput> = {}): LearnHitInput => ({
     tool: "bash",
     command: "awk '/^\\// {print}'",
     token: "/^\\//",
-    shapeSig: "bash|pattern-arg|regex-literal|single",
+    shapeSig: "bash|awk|pattern-arg|regex-literal|single",
+    commandName: "awk",
     role: "pattern-arg",
     shape: "regex-literal",
     hitReason: "outside",
@@ -61,26 +63,27 @@ const hit = (over: Partial<LearnHitInput> = {}): LearnHitInput => ({
     await service.ready;
     service.record([hit()], "once");
     service.record([hit()], "once");
-    check("below threshold still asks", !service.isExempt("bash|pattern-arg|regex-literal|single"));
+    check("below threshold still asks", !service.isExempt("bash|awk|pattern-arg|regex-literal|single"));
     service.record([hit()], "once");
-    check("threshold reached => exempt", service.isExempt("bash|pattern-arg|regex-literal|single"));
+    check("threshold reached => exempt", service.isExempt("bash|awk|pattern-arg|regex-literal|single"));
     service.record([hit()], "timeout");
-    check("timeout keeps exemption（观察不回撤）", service.isExempt("bash|pattern-arg|regex-literal|single"));
+    check("timeout keeps exemption（观察不回撤）", service.isExempt("bash|awk|pattern-arg|regex-literal|single"));
     service.record([hit()], "user-denied");
-    check("user deny revokes exemption", !service.isExempt("bash|pattern-arg|regex-literal|single"));
+    check("user deny revokes exemption", !service.isExempt("bash|awk|pattern-arg|regex-literal|single"));
     service.record([hit()], "once");
     service.record([hit()], "once");
     service.record([hit()], "once");
     service.record([hit()], "once");
-    check("deny history blocks re-exemption", !service.isExempt("bash|pattern-arg|regex-literal|single"));
+    check("deny history blocks re-exemption", !service.isExempt("bash|awk|pattern-arg|regex-literal|single"));
     const features = service.features();
-    const feature = features.find((item) => item.shape === "bash|pattern-arg|regex-literal|single");
+    const feature = features.find((item) => item.shape === "bash|awk|pattern-arg|regex-literal|single");
     check("feature counters", feature !== void 0 && feature.allowCount === 7 && feature.denyCount === 1 && feature.timeoutCount === 1, JSON.stringify(feature));
     check("search finds events", service.search("awk").length > 0);
     check("search by signature", service.search("pattern-arg").length > 0);
     const rows = service.search("awk", 5);
     check("hit id is uuidv7 and session preserved", rows.every((row) => UUIDV7_PATTERN.test(row.id)) && rows.every((row) => row.sessionId === "sess-learn"), JSON.stringify(rows.map((row) => [row.id, row.sessionId])));
-    check("removeFeature revokes", service.removeFeature("bash|pattern-arg|regex-literal|single") && !service.isExempt("bash|pattern-arg|regex-literal|single"));
+    check("hit command name preserved", rows.every((row) => row.commandName === "awk"), JSON.stringify(rows.map((row) => row.commandName)));
+    check("removeFeature revokes", service.removeFeature("bash|awk|pattern-arg|regex-literal|single") && !service.isExempt("bash|awk|pattern-arg|regex-literal|single"));
     service.close();
 }
 
@@ -91,7 +94,7 @@ const hit = (over: Partial<LearnHitInput> = {}): LearnHitInput => ({
     service.record([hit()], "once");
     service.record([hit()], "once");
     service.record([hit()], "once");
-    check("disabled => no learning", service.features().length === 0 && !service.isExempt("bash|pattern-arg|regex-literal|single"));
+    check("disabled => no learning", service.features().length === 0 && !service.isExempt("bash|awk|pattern-arg|regex-literal|single"));
     service.close();
 }
 
@@ -139,7 +142,45 @@ const hit = (over: Partial<LearnHitInput> = {}): LearnHitInput => ({
     await migrator.connect();
     const status = await migrator.status();
     await migrator.disconnect();
-    check("migration history recorded in _migrations", status.length === 1 && status[0].executed === true && status[0].name === "0001_init", JSON.stringify(status));
+    check("migration history recorded in _migrations", status.length === 2 && status[0].executed === true && status[0].name === "0001_init" && status[1].executed === true && status[1].name === "0002_add_command_name", JSON.stringify(status));
+}
+
+// --- 五段签名：新旧异键隔离 + 方向锁（abs-path/硬路径不可学）+ 逐签名归纳 ---
+{
+    const service = createLearnService(join(dir, "learn-sig5.sqlite3"), {enabled: () => true, threshold: () => 2, retentionDays: () => 90});
+    await service.ready;
+    // 升级前的存量四段行（哪怕已豁免）与新五段键天然异键、精确匹配永不命中。
+    service.db.writeFeature({shape: "bash|pattern-arg|regex-literal|single", allowCount: 3, denyCount: 0, timeoutCount: 0, exempt: true, updatedAt: Date.now()});
+    check("legacy 4-segment row does not exempt 5-segment key", !service.isExempt("bash|awk|pattern-arg|regex-literal|single"));
+    // abs-path 形态不可学（方向锁：真实路径的放行是授权语义、不是误报）。
+    service.record([hit({shapeSig: "bash|cat|arg|abs-path|double", shape: "abs-path", token: "/etc/passwd", commandName: "cat"})], "once");
+    service.record([hit({shapeSig: "bash|cat|arg|abs-path|double", shape: "abs-path", token: "/etc/passwd", commandName: "cat"})], "once");
+    check("abs-path shape never learns", !service.isExempt("bash|cat|arg|abs-path|double") && service.features().every((item) => item.shape !== "bash|cat|arg|abs-path|double"));
+    // 硬路径特征（盘符/UNC/`~/`/`..`）不可学（方向锁）。
+    service.record([hit({shapeSig: "pwsh|get-item|arg|abs-path|double", shape: "abs-path", token: "C:\\tmp\\x", commandName: "get-item"})], "once");
+    check("hard-path token never learns", service.features().every((item) => item.shape !== "pwsh|get-item|arg|abs-path|double"));
+    // 可学形态照常归纳到阈值豁免。
+    service.record([hit()], "once");
+    service.record([hit()], "once");
+    check("learnable shape exempts at threshold", service.isExempt("bash|awk|pattern-arg|regex-literal|single"));
+    // 逐签名归纳：一次裁决携带多个签名时同签名只计一次、异签名互不混淆。
+    service.record([
+        hit({shapeSig: "pwsh||string-content|regex-escape|single", shape: "regex-escape", token: "\\\\target\\\\", commandName: ""}),
+        hit({shapeSig: "pwsh||string-content|regex-escape|single", shape: "regex-escape", token: "\\\\target\\\\", commandName: ""}),
+        hit({shapeSig: "pwsh||arg|soft-path|none", shape: "soft-path", token: "foo\\bar", commandName: ""})
+    ], "once");
+    const dup = service.features().find((item) => item.shape === "pwsh||string-content|regex-escape|single");
+    check("same-signature hits count once per verdict", dup !== void 0 && dup.allowCount === 1, JSON.stringify(dup));
+    const other = service.features().find((item) => item.shape === "pwsh||arg|soft-path|none");
+    check("distinct signatures induct independently", other !== void 0 && other.allowCount === 1, JSON.stringify(other));
+    // 拒绝回撤同样按签名作用（只回撤被拒的那个形态、不波及兄弟签名）。
+    service.record([hit({shapeSig: "pwsh||string-content|regex-escape|single", shape: "regex-escape", token: "\\\\target\\\\", commandName: ""})], "once");
+    check("regex-escape exempt at threshold", service.isExempt("pwsh||string-content|regex-escape|single"));
+    service.record([hit({shapeSig: "pwsh||arg|soft-path|none", shape: "soft-path", token: "foo\\bar", commandName: ""})], "once");
+    check("soft-path exempt at threshold", service.isExempt("pwsh||arg|soft-path|none"));
+    service.record([hit({shapeSig: "pwsh||arg|soft-path|none", shape: "soft-path", token: "foo\\bar", commandName: ""})], "user-denied");
+    check("user deny revokes only the denied shape", !service.isExempt("pwsh||arg|soft-path|none") && service.isExempt("pwsh||string-content|regex-escape|single"));
+    service.close();
 }
 
 // --- fail-safe：损坏的 db 降级为不可用 stub（学习丢失、门禁不受影响）---
@@ -150,7 +191,7 @@ const hit = (over: Partial<LearnHitInput> = {}): LearnHitInput => ({
     await service.ready;
     check("corrupt db => unavailable stub", service.db.available === false);
     service.record([hit()], "once");
-    check("unavailable stub swallows writes", service.features().length === 0 && !service.isExempt("bash|pattern-arg|regex-literal|single"));
+    check("unavailable stub swallows writes", service.features().length === 0 && !service.isExempt("bash|awk|pattern-arg|regex-literal|single"));
     check("unavailable search empty", service.search("awk").length === 0);
     service.close();
 }

@@ -18,7 +18,7 @@ import {
     toolAccessKind
 } from "./scanner.ts";
 import type {PathEntry, SensitiveConfig, SensitiveHit} from "./scanner.ts";
-import {createLearnService} from "./learn.ts";
+import {createLearnService, isLearnable} from "./learn.ts";
 import type {LearnHitInput} from "./learn.ts";
 import {initSyntaxParsers} from "./shell-syntax.ts";
 import {ensureScopePersisted, rootSessionIdOf, SCOPE, sessionScope, setSessionScope} from "./session-state.ts";
@@ -666,7 +666,8 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
             const escaped = entry.outside === true || (recheckRealpath && escapesViaRealpath(entry.path, root));
             // 无感学习豁免（形态签名级）：只压掉误报形态的 outside 询问，
             // deny（更早）与敏感（下方）判定不受影响。
-            const learnedExempt = entry.shapeSig !== void 0 && learnService.isExempt(entry.shapeSig);
+            // 方向锁：abs-path 形态/硬路径特征不可学、不豁免（isLearnable）。
+            const learnedExempt = entry.shapeSig !== void 0 && isLearnable(entry.shapeSig, entry.path) && learnService.isExempt(entry.shapeSig);
             if (escaped && !outsideReadsPass && !alwaysAllows(entry.path, session) && !learnedExempt) {
                 outside.push(entry.outside === true ? entry : {
                     ...entry,
@@ -683,79 +684,96 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
         if (outside.length === 0 && sensitive.length === 0) return next();
         const reason = [...outside.slice(0, 1), ...sensitive.slice(0, 1)].map((entry) => entry.reason).join("；");
         if (exec.agent === void 0) return {kind: "deny", reason: `[workspace-only] ${reason}`, info: {code: "workspace-only/no-agent"}};
-        //（上一行拒绝保证了 `outside`/`sensitive` 非空，`focus` 必然存在。）
-        const focus = outside[0] ?? sensitive[0]!;
-        noteRecent(directoryOf(focus.path), exec.name);
-        const verdict = await askFlow.askOutside({
-            ctx,
-            agent: exec.agent,
-            session,
-            exec,
-            reason,
-            dir: directoryOf(focus.path),
-            // 批量放行（T2）的目标始终是工作区外集合：目录白名单绝不能放行敏感 ask（D5）。
-            targets: outside.map((entry) => entry.path),
-            grantKinds: [...outside.length > 0 ? ["dir"] : [], ...sensitive.length > 0 ? ["pattern"] : []],
-            patterns: [...new Set(sensitive.map((entry) => entry.pattern))],
-            sensitive: sensitive.length > 0,
-            signal: exec.signal
-        });
-        // 无感学习记账：逐条命中写事件、按焦点签名归纳（放行 ≥ 阈值且用户
-        // 拒绝为 0 → 自动豁免；用户拒绝即回撤）。只记真实询问过的判决 ——
-        // 批量放行是白名单语义、不是形态判断。记账异常绝不影响裁决。
-        // T36 审批事件：**弹窗即记、不论结果**（通过/拒绝/超时全记，
-        // `approval_events` 表），供事后分析误报与审批行为。
-        if (verdict.channel !== CHANNEL.alwaysBatch) {
-            try {
-                const verdictKey = verdict.choice === CHOICE.deny ? verdict.denyCause ?? "user-denied" : verdict.choice;
-                const hits: LearnHitInput[] = [...outside, ...sensitive]
-                    .filter((entry) => entry.shapeSig !== void 0)
-                    .map((entry) => {
-                        const parts = (entry.shapeSig ?? "").split("|");
-                        return {
-                            tool: exec.name,
-                            command: typeof args.command === "string" ? args.command : "",
-                            token: entry.path,
-                            shapeSig: entry.shapeSig ?? "",
-                            role: parts[1] ?? "",
-                            shape: parts[2] === void 0 || parts[2] === "plain" ? null : parts[2],
-                            hitReason: entry.outside === true ? "outside" : "sensitive",
-                            isFocus: entry.path === focus.path,
-                            sessionId: session?.id ?? ""
-                        };
-                    });
-                learnService.record(hits, verdictKey);
-                learnService.recordApproval({
-                    at: gateStartedAt,
-                    tool: exec.name,
-                    command: typeof args.command === "string" ? args.command : "",
-                    dir: directoryOf(focus.path),
-                    reason,
-                    targets: JSON.stringify([...outside, ...sensitive].map((entry) => entry.path)),
-                    sensitive: sensitive.length > 0,
-                    verdict: verdictKey,
-                    channel: verdict.channel,
-                    ms: Date.now() - gateStartedAt,
-                    sessionId: session?.id ?? ""
-                });
-            } catch (error) {
-                console.warn("[workspace-only] learn record failed (gate unaffected)", error);
-            }
+        // 逐目标审批（每个命中目标独立卡片、独立裁决）：按目标（path）分组 ——
+        // 同一路径的多个命中条目（candidates 双面/词级+INTERIOR 重复）共享一次裁决。
+        // 任一目标拒绝/超时 → 整个调用 fail-closed 拒绝（命令是原子的，放行一半
+        // 照样访问被拒目标）；全部放行才执行。「总是允许该目录」由 ask 队列的
+        // 出队白名单重查批量承接（T2）。
+        const groups = new Map<string, Array<PathEntry & Partial<SensitiveHit>>>();
+        for (const entry of [...outside, ...sensitive] as Array<PathEntry & Partial<SensitiveHit>>) {
+            const list = groups.get(entry.path);
+            if (list === void 0) groups.set(entry.path, [entry]);
+            else list.push(entry);
         }
-        // "仅此一次"与"总是允许该目录"都放行这次调用
-        // （后者已经把白名单条目持久化了）。
-        if (verdict.choice === CHOICE.once || verdict.choice === CHOICE.always) return {kind: "allow"};
-        // deny 细分（agent 契约，AGENTS.md「deny 原因词汇」条目）：用户意志
-        //（user-denied/user-rejected，勿重试）与超时/无应答（timeout/
-        // no-channel/cancelled，fail-closed、可提醒用户后重试）用稳定词汇区分，
-        // `info.code` 同构（`workspace-only/<cause>`）。
-        const cause = verdict.denyCause ?? "user-denied";
-        const denyText = cause === "user-rejected" ? "the user rejected this call"
-            : cause === "timeout" ? "approval timed out (fail-closed); the user did not respond — ask the user before retrying"
-                : cause === "no-channel" ? "no approval channel is available (fail-closed)"
-                    : cause === "cancelled" ? "the call was cancelled before approval"
-                        : "the user denied this call";
-        return {kind: "deny", reason: `[workspace-only] ${reason} — ${denyText}`, info: {code: `workspace-only/${cause}`}};
+        for (const [path, group] of groups) {
+            const entrySensitive = group.some((entry) => entry.pattern !== void 0);
+            const entryReason = group[0]?.reason ?? reason;
+            const patterns = [...new Set(group.flatMap((entry) => entry.pattern !== void 0 ? [entry.pattern] : []))];
+            noteRecent(directoryOf(path), exec.name);
+            const verdict = await askFlow.askOutside({
+                ctx,
+                agent: exec.agent,
+                session,
+                exec,
+                reason: entryReason,
+                dir: directoryOf(path),
+                // 批量放行（T2）的目标始终是工作区外集合：目录白名单绝不能放行敏感 ask（D5）。
+                targets: group.some((entry) => entry.outside === true) ? [path] : [],
+                grantKinds: [...group.some((entry) => entry.outside === true) ? ["dir"] : [], ...entrySensitive ? ["pattern"] : []],
+                patterns,
+                sensitive: entrySensitive,
+                signal: exec.signal
+            });
+            // 无感学习记账（逐目标）：该目标的全部命中条目共享这次裁决、按签名
+            // 归纳（放行 ≥ 阈值且用户拒绝为 0 → 自动豁免；用户拒绝即回撤）。
+            // 只记真实询问过的判决 —— 批量放行是白名单语义、不是形态判断。
+            // 记账异常绝不影响裁决。
+            // T36 审批事件：**弹窗即记、不论结果**（通过/拒绝/超时全记，
+            // `approval_events` 表），供事后分析误报与审批行为。
+            if (verdict.channel !== CHANNEL.alwaysBatch) {
+                try {
+                    const verdictKey = verdict.choice === CHOICE.deny ? verdict.denyCause ?? "user-denied" : verdict.choice;
+                    const hits: LearnHitInput[] = group
+                        .filter((entry) => entry.shapeSig !== void 0)
+                        .map((entry) => {
+                            const parts = (entry.shapeSig ?? "").split("|");
+                            return {
+                                tool: exec.name,
+                                command: typeof args.command === "string" ? args.command : "",
+                                token: entry.path,
+                                shapeSig: entry.shapeSig ?? "",
+                                commandName: parts[1] ?? "",
+                                role: parts[2] ?? "",
+                                shape: parts[3] === void 0 || parts[3] === "plain" ? null : parts[3],
+                                hitReason: entry.outside === true ? "outside" : "sensitive",
+                                isFocus: true,
+                                sessionId: session?.id ?? ""
+                            };
+                        });
+                    learnService.record(hits, verdictKey);
+                    learnService.recordApproval({
+                        at: gateStartedAt,
+                        tool: exec.name,
+                        command: typeof args.command === "string" ? args.command : "",
+                        dir: directoryOf(path),
+                        reason: entryReason,
+                        targets: JSON.stringify([path]),
+                        sensitive: entrySensitive,
+                        verdict: verdictKey,
+                        channel: verdict.channel,
+                        ms: Date.now() - gateStartedAt,
+                        sessionId: session?.id ?? ""
+                    });
+                } catch (error) {
+                    console.warn("[workspace-only] learn record failed (gate unaffected)", error);
+                }
+            }
+            // "仅此一次"与"总是允许该目录"都放行该目标
+            // （后者已经把白名单条目持久化了）。
+            if (verdict.choice === CHOICE.once || verdict.choice === CHOICE.always) continue;
+            // deny 细分（agent 契约，AGENTS.md「deny 原因词汇」条目）：用户意志
+            //（user-denied/user-rejected，勿重试）与超时/无应答（timeout/
+            // no-channel/cancelled，fail-closed、可提醒用户后重试）用稳定词汇区分，
+            // `info.code` 同构（`workspace-only/<cause>`）。
+            const cause = verdict.denyCause ?? "user-denied";
+            const denyText = cause === "user-rejected" ? "the user rejected this call"
+                : cause === "timeout" ? "approval timed out (fail-closed); the user did not respond — ask the user before retrying"
+                    : cause === "no-channel" ? "no approval channel is available (fail-closed)"
+                        : cause === "cancelled" ? "the call was cancelled before approval"
+                            : "the user denied this call";
+            return {kind: "deny", reason: `[workspace-only] ${entryReason} — ${denyText}`, info: {code: `workspace-only/${cause}`}};
+        }
+        return next();
     });
 
     // 面向客户端的管理表面（任务 B 与 D）：白名单条目、最近 ask，以及按会话的旁路开关。

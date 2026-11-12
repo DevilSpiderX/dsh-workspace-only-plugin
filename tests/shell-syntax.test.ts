@@ -58,18 +58,28 @@ describe("classifyShape（形态分类）", () => {
         assert.equal(classifyShape("/foo/"), "regex-literal-loose");
     });
 
-    it("真实路径形态不归豁免形态", () => {
-        assert.equal(classifyShape("/etc/x"), void 0);
-        assert.equal(classifyShape("/usr/bin/"), void 0);
-        assert.equal(classifyShape("/foo/bar/"), void 0);
-        assert.equal(classifyShape("/etc/passwd"), void 0);
+    it("真实路径形态归 abs-path（不豁免、不可学）", () => {
+        assert.equal(classifyShape("/etc/x"), "abs-path");
+        assert.equal(classifyShape("/usr/bin/"), "abs-path");
+        assert.equal(classifyShape("/foo/bar/"), "abs-path");
+        assert.equal(classifyShape("/etc/passwd"), "abs-path");
     });
 
     it("T15 注释碎片", () => {
         assert.equal(classifyShape("//"), "comment-slash");
         assert.equal(classifyShape("/* comment */"), "comment-slash");
-        assert.equal(classifyShape("/*"), void 0);
-        assert.equal(classifyShape("//server/share/x"), void 0);
+        assert.equal(classifyShape("/*"), "abs-path");
+        assert.equal(classifyShape("//server/share/x"), "abs-path");
+    });
+
+    it("反斜杠转义序列归 regex-escape，路径样词归 soft-path", () => {
+        assert.equal(classifyShape("\\\\target\\\\"), "regex-escape");
+        assert.equal(classifyShape("\\d"), "regex-escape");
+        assert.equal(classifyShape("\\"), "regex-escape");
+        assert.equal(classifyShape("\\\\server\\share"), "abs-path");
+        assert.equal(classifyShape("foo\\bar"), "soft-path");
+        assert.equal(classifyShape("src/x"), "soft-path");
+        assert.equal(classifyShape("hello"), void 0);
     });
 });
 
@@ -95,11 +105,12 @@ describe("hasHardPathShape（硬路径特征）", () => {
 });
 
 describe("shapeSignature（学习层归纳键）", () => {
-    it("判别维度全保留", () => {
+    it("判别维度全保留（五段：工具|命令|角色|形态|引号）", () => {
         assert.equal(
-            shapeSignature({tool: "bash", role: "pattern-arg", shape: "regex-literal", quote: "single"}),
-            "bash|pattern-arg|regex-literal|single"
+            shapeSignature({tool: "bash", command: "awk", role: "pattern-arg", shape: "regex-literal", quote: "single"}),
+            "bash|awk|pattern-arg|regex-literal|single"
         );
-        assert.equal(shapeSignature({tool: "pwsh", role: "arg", shape: null, quote: "none"}), "pwsh|arg|plain|none");
+        assert.equal(shapeSignature({tool: "pwsh", command: "get-childitem", role: "arg", shape: null, quote: "none"}), "pwsh|get-childitem|arg|plain|none");
+        assert.equal(shapeSignature({tool: "pwsh", role: "arg", shape: "regex-escape", quote: "single"}), "pwsh||arg|regex-escape|single");
     });
 });

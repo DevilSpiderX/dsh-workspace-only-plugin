@@ -14,7 +14,7 @@
  */
 import {openLearnDb, UNAVAILABLE} from "./learn-db.ts";
 import type {ApprovalEvent, HitEvent, LearnDb, LearnedFeature} from "./learn-db.ts";
-import {shapeSignature} from "./shell-syntax.ts";
+import {hasHardPathShape, shapeSignature} from "./shell-syntax.ts";
 
 export {shapeSignature};
 
@@ -34,6 +34,8 @@ export interface LearnHitInput {
     readonly command: string;
     readonly token: string;
     readonly shapeSig: string;
+    /** token 所属命令的归一名（空串=不可知）。 */
+    readonly commandName: string;
     readonly role: string;
     readonly shape: string | null;
     readonly hitReason: string;
@@ -53,7 +55,18 @@ export function verdictClass(verdict: string): "allow" | "user-deny" | "other-de
 }
 
 /**
- * 形态签名（归纳键）：`工具|角色|形态|引号` —— 判别维度全部保留、
+ * 方向锁：**abs-path 形态与硬路径特征不可学**——学习只降误判，
+ * 真实路径的放行是授权语义（白名单的事）、不是误报。五段签名的形态段
+ * （第 4 段）为 `abs-path` 或 token 带硬路径特征（盘符/UNC/`~/`/`..`）
+ * 的命中永不进归纳、永不被豁免。
+ */
+export function isLearnable(shapeSig: string, token: string): boolean {
+    if (hasHardPathShape(token)) return false;
+    return (shapeSig.split("|")[3] ?? "plain") !== "abs-path";
+}
+
+/**
+ * 形态签名（归纳键）：`工具|命令|角色|形态|引号` —— 判别维度全部保留、
  * 绝不泛化到裸 token。签名级豁免比"具体 token 放行"安全得多：
  * 它只压掉误报形态的 outside 询问，deny/敏感/硬路径照常。
  * （实现在 `shell-syntax.ts`，与扫描侧的签名同源。）
@@ -116,32 +129,37 @@ export function createLearnService(dbPath: string, options: LearnOptions): Learn
                 for (const hit of hits) {
                     db.recordHit({...hit, at, verdict});
                 }
-            // 归因以焦点条目为主（卡片展示的就是它）。
-            const focus = hits.find((hit) => hit.isFocus) ?? hits[0];
-            if (focus === void 0) return;
-            const prior = cache.get(focus.shapeSig) ?? {
-                shape: focus.shapeSig,
-                allowCount: 0,
-                denyCount: 0,
-                timeoutCount: 0,
-                exempt: false,
-                updatedAt: at
-            };
-            const kind = verdictClass(verdict);
-            const next: LearnedFeature = {
-                shape: prior.shape,
-                allowCount: prior.allowCount + (kind === "allow" ? 1 : 0),
-                // 用户拒绝是唯一负样本：计数 + 立即回撤豁免。
-                denyCount: prior.denyCount + (kind === "user-deny" ? 1 : 0),
-                timeoutCount: prior.timeoutCount + (kind === "other-deny" ? 1 : 0),
-                exempt: kind === "user-deny" ? false : prior.exempt || (kind === "allow" && decidesExemption({
-                    allowCount: prior.allowCount + 1,
-                    denyCount: prior.denyCount
-                }, options.threshold())),
-                updatedAt: at
-            };
-            cache.set(next.shape, next);
-            db.writeFeature(next);
+            // 归纳：逐签名去重（一次裁决内同签名只计一次）；方向锁过滤
+            //（abs-path/硬路径不可学）。逐目标审批后一次 ask 通常单目标，
+            // 其判决归因天然干净。
+            const seen = new Set<string>();
+            for (const hit of hits) {
+                if (!isLearnable(hit.shapeSig, hit.token) || seen.has(hit.shapeSig)) continue;
+                seen.add(hit.shapeSig);
+                const prior = cache.get(hit.shapeSig) ?? {
+                    shape: hit.shapeSig,
+                    allowCount: 0,
+                    denyCount: 0,
+                    timeoutCount: 0,
+                    exempt: false,
+                    updatedAt: at
+                };
+                const kind = verdictClass(verdict);
+                const next: LearnedFeature = {
+                    shape: prior.shape,
+                    allowCount: prior.allowCount + (kind === "allow" ? 1 : 0),
+                    // 用户拒绝是唯一负样本：计数 + 立即回撤豁免。
+                    denyCount: prior.denyCount + (kind === "user-deny" ? 1 : 0),
+                    timeoutCount: prior.timeoutCount + (kind === "other-deny" ? 1 : 0),
+                    exempt: kind === "user-deny" ? false : prior.exempt || (kind === "allow" && decidesExemption({
+                        allowCount: prior.allowCount + 1,
+                        denyCount: prior.denyCount
+                    }, options.threshold())),
+                    updatedAt: at
+                };
+                cache.set(next.shape, next);
+                db.writeFeature(next);
+            }
             db.prune(at - options.retentionDays() * 86_400_000);
             };
             if (ready) op(); else pending.push(op);

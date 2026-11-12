@@ -306,7 +306,7 @@ export function shellEntries(command: unknown, root: string, dialect: ShellDiale
             // 模式参数位上的 `/…/` 定界（`awk '/foo/'`）同理是模式文本。
             const shape = classifyShape(t) ?? (t === word.value ? word.shape : void 0);
             if (shape === "regex-literal" || shape === "comment-slash") continue;
-            const entrySig = shapeSignature({tool: dialect, role: word.role, shape: shape ?? word.shape, quote: word.quote});
+            const entrySig = shapeSignature({tool: dialect, command: word.commandName, role: word.role, shape: shape ?? word.shape, quote: word.quote});
             if (isRegexShapedText(t)) continue;
             if (word.role === "pattern-arg" && t.startsWith("/") && !hasHardPathShape(t) && !/\s/.test(t) && (t.endsWith("/") || /\/[a-z]{0,3}$/i.test(t))) continue;
             if (word.quote !== "single") {
@@ -366,7 +366,10 @@ export function shellEntries(command: unknown, root: string, dialect: ShellDiale
                 const innerShape = classifyShape(path);
                 if (innerShape === "regex-literal" || innerShape === "comment-slash") continue;
                 if (isRegexShapedText(path)) continue;
-                const innerSig = shapeSignature({tool: dialect, role: "string-content", shape: innerShape, quote: word.quote});
+                // pwsh 比较运算符（`-match`/`-notmatch`/`-like`/`-notlike`）右侧的
+                // 字符串内容是模式文本（pattern-arg），不是普通字符串内容。
+                const innerRole = /-(?:not)?(?:match|like)\s*['"]?$/.test(t.slice(0, match.index)) ? "pattern-arg" : "string-content";
+                const innerSig = shapeSignature({tool: dialect, command: word.commandName, role: innerRole, shape: innerShape, quote: word.quote});
                 // 内部的家目录写法同样展开；无法解析的保持 fail-safe。
                 const expandedPath = expandHomeSpelling(path);
                 if (expandedPath !== void 0) {

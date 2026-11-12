@@ -18,6 +18,7 @@ import {
     pathReason,
     sameLocation,
     sensitiveMatch,
+    shellEntries,
     shellReason,
     toolAccessKind
 } from "../src/host/scanner.ts";
@@ -294,20 +295,28 @@ const slashShapes: [string, boolean][] = [
     ["src/x", false]
 ];
 /**
- * 形态分类直测 —— [value, expectedShape]。正则字面量/注释碎片豁免，
- * 真实路径形态与硬路径特征永不归入豁免形态。
+ * 形态分类直测 —— [value, expectedShape]。正则字面量/注释碎片/反斜杠
+ * 转义序列是模式文本；真实路径形态（abs-path）与硬路径特征永不归入
+ * 豁免形态、不可学；路径样词归 soft-path。
  */
 const shapeCases: [string, string | undefined][] = [
     ["/^\\//", "regex-literal"],
     ["/^\\d+$/", "regex-literal"],
     ["/foo/", "regex-literal-loose"],
-    ["/etc/x", undefined],
-    ["/usr/bin/", undefined],
-    ["/foo/bar/", undefined],
+    ["/etc/x", "abs-path"],
+    ["/usr/bin/", "abs-path"],
+    ["/foo/bar/", "abs-path"],
     ["//", "comment-slash"],
-    ["/*", undefined],
-    ["C:\\tmp\\x", undefined],
-    ["/etc/passwd", undefined]
+    ["/*", "abs-path"],
+    ["C:\\tmp\\x", "abs-path"],
+    ["/etc/passwd", "abs-path"],
+    ["\\\\target\\\\", "regex-escape"],
+    ["\\d", "regex-escape"],
+    ["\\", "regex-escape"],
+    ["\\\\server\\share", "abs-path"],
+    ["foo\\bar", "soft-path"],
+    ["src/x", "soft-path"],
+    ["hello", undefined]
 ];
 /**
  * 正则形态文本（内嵌片段）直测 —— [value, expectedRegexShaped]。
@@ -449,6 +458,62 @@ for (const [name, expected] of [["read", "read"], ["read_image", "read"], ["glob
     const ok = got === expected;
     if (ok) pass += 1;
     console.log(`${ok ? "PASS" : "FAIL"}  access-kind ${JSON.stringify(name)} => ${got}`);
+}
+{
+    // pwsh 逗号数组拆分（一词一路径）：引号外逗号切独立词、引号内逗号
+    //（`"a,b"`）与 scriptblock 不拆、bash 的 `","` 是词内字符不拆。
+    const wordsOf = (cmd: string, dialect: ShellDialect): string[] =>
+        parseShellWords(cmd, dialect).filter((word) => word.role !== "comment" && word.role !== "command").map((word) => word.value);
+    total += 1;
+    const split = wordsOf("Get-ChildItem \"C:\\a\",\"C:\\b\"", "pwsh");
+    const ok1 = JSON.stringify(split) === JSON.stringify(["C:\\a", "C:\\b"]);
+    if (ok1) pass += 1;
+    console.log(`${ok1 ? "PASS" : "FAIL"}  pwsh comma split => ${JSON.stringify(split)}`);
+    total += 1;
+    const intact = wordsOf("Get-Content \"a,b\"", "pwsh");
+    const ok2 = JSON.stringify(intact) === JSON.stringify(["a,b"]);
+    if (ok2) pass += 1;
+    console.log(`${ok2 ? "PASS" : "FAIL"}  pwsh quoted comma intact => ${JSON.stringify(intact)}`);
+    total += 1;
+    const bashIntact = wordsOf("echo a,b", "bash");
+    const ok3 = JSON.stringify(bashIntact) === JSON.stringify(["a,b"]);
+    if (ok3) pass += 1;
+    console.log(`${ok3 ? "PASS" : "FAIL"}  bash comma intact => ${JSON.stringify(bashIntact)}`);
+    total += 1;
+    const script = wordsOf("Where-Object { $x -notmatch 'a' }", "pwsh");
+    const ok4 = script.some((value) => value.includes("-notmatch"));
+    if (ok4) pass += 1;
+    console.log(`${ok4 ? "PASS" : "FAIL"}  pwsh scriptblock not split => ${JSON.stringify(script)}`);
+}
+{
+    // 命令名归属与归一（basename + pwsh 小写）：词挂所属命令段的归一命令名。
+    total += 1;
+    const bashNames = parseShellWords("/usr/bin/grep x /etc/y", "bash").filter((word) => word.role !== "comment").map((word) => word.commandName);
+    const ok1 = bashNames.every((name) => name === "grep");
+    if (ok1) pass += 1;
+    console.log(`${ok1 ? "PASS" : "FAIL"}  bash command name => ${JSON.stringify(bashNames)}`);
+    total += 1;
+    const pwshNames = parseShellWords("Get-ChildItem \"C:\\a\"", "pwsh").filter((word) => word.role !== "comment").map((word) => word.commandName);
+    const ok2 = pwshNames.every((name) => name === "get-childitem");
+    if (ok2) pass += 1;
+    console.log(`${ok2 ? "PASS" : "FAIL"}  pwsh command name => ${JSON.stringify(pwshNames)}`);
+    total += 1;
+    const pipeNames = parseShellWords("cat a | grep b", "bash")
+        .filter((word) => word.role !== "comment" && word.raw !== "|" && word.raw !== ";")
+        .map((word) => `${word.value}=>${word.commandName}`);
+    const ok3 = pipeNames.join(",") === "cat=>cat,a=>cat,grep=>grep,b=>grep";
+    if (ok3) pass += 1;
+    console.log(`${ok3 ? "PASS" : "FAIL"}  pipeline command names => ${JSON.stringify(pipeNames)}`);
+}
+{
+    // pwsh 比较运算符（`-match`/`-notmatch`/`-like`/`-notlike`）右侧的字符串
+    // 是模式文本（pattern-arg）；反斜杠转义序列与真实路径在签名形态段异键。
+    total += 1;
+    const entries = shellEntries("Where-Object { $_.FullName -notmatch '\\\\target\\\\' }", winRoot, "pwsh");
+    const entry = entries.find((item) => item.path === "\\\\target\\\\");
+    const ok = entry !== void 0 && entry.shapeSig === "pwsh|where-object|pattern-arg|regex-escape|single";
+    if (ok) pass += 1;
+    console.log(`${ok ? "PASS" : "FAIL"}  pwsh operator pattern-arg signature => ${entry?.shapeSig}`);
 }
 console.log(`${pass}/${total} passed`);
 if (pass !== total) process.exitCode = 1;

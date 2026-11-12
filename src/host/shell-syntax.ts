@@ -39,14 +39,20 @@ export type WordRole =
     /** 注释（`# ...`、`<# ... #>`）——不携带路径。 */
     | "comment";
 
-/** 词自身的形态分类（豁免判据）。 */
+/** 词自身的形态分类（豁免判据与学习签名的形态段）。 */
 export type WordShape =
     /** 正则字面量：`/` 定界 + 锚点/转义/空格特征（`/^\//`、`/^\d+$/`）。 */
     | "regex-literal"
     /** 松正则形态：`/foo/`——与目录写法词法不可分，默认不豁免、可学习开启。 */
     | "regex-literal-loose"
     /** 正则/注释斜杠碎片（T15 的 `//`、`/\*`、`/*` 语义）。 */
-    | "comment-slash";
+    | "comment-slash"
+    /** 反斜杠转义序列（`\\target\\`、`\d`、孤立 `\`/`\\`）——正则碎片，不是路径。 */
+    | "regex-escape"
+    /** 绝对/硬路径写法（盘符、UNC、`//server/share`、`~/`、`..`、POSIX `/` 开头）——永不豁免、不可学。 */
+    | "abs-path"
+    /** 路径样词（含 `\`/`/` 分隔但非绝对，如 `foo\bar`、`src/main`）。 */
+    | "soft-path";
 
 /** 一个词：原始切片、去引号/反转义后的字面值、引号形态、角色与形态。 */
 export interface ShellWord {
@@ -60,20 +66,37 @@ export interface ShellWord {
     readonly role: WordRole;
     /** 形态分类（正则/注释碎片豁免的判据）。 */
     readonly shape?: WordShape | undefined;
+    /** 所属命令段的归一命令名（空串=不可知；`command` 词是它自身）。 */
+    readonly commandName?: string | undefined;
 }
 
 /**
  * 硬路径特征：无论角色/形态如何都**永不豁免**的安全底线——
- * 盘符、UNC、`//server/share` 斜杠写法、家目录写法、`..` 逃逸。
+ * 盘符、UNC（`\\server\share`，含 share 段）、`//server/share` 斜杠写法、
+ * 家目录写法、`..` 逃逸。反斜杠转义序列（`\\target\\`、`\d`）不是硬路径，
+ * 归 `regex-escape` 形态（见 {@link isBackslashEscapeSeq}）。
  */
 export function hasHardPathShape(value: string): boolean {
     return /^[A-Za-z]:[\\/]/.test(value)
-        || value.startsWith("\\\\")
+        || /^\\\\[^\\/]+[\\/][^\\/]/.test(value)
         || /^\/\/[A-Za-z0-9.~_-]+[\\/]/.test(value)
         || value.startsWith("~")
         || /\.\.[\\/]/.test(value)
         || value === ".."
         || value.includes(":\\");
+}
+
+/**
+ * 反斜杠转义序列形态：`\\target\\`、`\d`、`\d+`、`\.`、孤立 `\`/`\\` ——
+ * 正则/模式文本的碎片，与路径写法可分（UNC `\\server\share` 有 share 段，
+ * 残缺 UNC `\\server` 不在此列、保守归路径）。判别收紧为「明确的转义序列
+ * 形态」，其余反斜杠写法一律不归入（fail-closed）。
+ */
+export function isBackslashEscapeSeq(value: string): boolean {
+    if (value === "\\" || value === "\\\\") return true;
+    if (/^\\[^\\][+*?]{0,2}$/.test(value)) return true;
+    if (/^\\\\[A-Za-z0-9_]+\\\\$/.test(value)) return true;
+    return false;
 }
 
 /**
@@ -95,11 +118,14 @@ export function isRegexShapedText(value: string): boolean {
 }
 
 /**
- * 形态分类：正则定界形态与 T15 的正则/注释碎片。判定词自身形态，
- * 不看命令上下文（那是 `pattern-arg` 的事）。硬路径特征永不归入豁免形态。
+ * 形态分类：正则定界形态、T15 的正则/注释碎片、反斜杠转义序列与路径写法。
+ * 判定词自身形态，不看命令上下文（那是 `pattern-arg` 的事）。硬路径特征
+ * 永不归入豁免形态（归 `abs-path`，同样不可学）。
  */
 export function classifyShape(value: string): WordShape | undefined {
-    if (value === "" || hasHardPathShape(value)) return void 0;
+    if (value === "") return void 0;
+    // 硬路径写法（盘符/UNC/`//server/share`/`~/`/`..`）单列形态、永不豁免。
+    if (hasHardPathShape(value)) return "abs-path";
     // T15 语义：`/\*`、`//`（非 UNC）、`/*`（非根 glob）是模式/注释碎片。
     if (value[0] === "/") {
         const second = value[1];
@@ -124,6 +150,14 @@ export function classifyShape(value: string): WordShape | undefined {
             }
         }
     }
+    // 反斜杠转义序列（`\\target\\`、`\d`、孤立 `\`/`\\`）是正则碎片。
+    if (isBackslashEscapeSeq(value)) return "regex-escape";
+    // 残缺 UNC（`\\server`）等反斜杠开头的其余写法保守按路径（fail-closed）。
+    if (value.startsWith("\\\\")) return "abs-path";
+    // POSIX 绝对路径写法（`/etc/x`）是真实路径形态。
+    if (value.startsWith("/")) return "abs-path";
+    // 路径样词：含分隔符但非绝对（`foo\bar`、`src/main`）。
+    if (value.includes("/") || value.includes("\\")) return "soft-path";
     return void 0;
 }
 
@@ -144,12 +178,22 @@ function commandBasename(name: string): string {
 }
 
 /**
- * 形态签名（学习层的归纳键，`learn.ts` 消费）：`工具|角色|形态|引号` ——
- * 判别维度全部保留、绝不泛化到裸 token。签名级豁免只压掉误报形态的
+ * 学习签名的命令段归一：basename + pwsh cmdlet 小写（大小写不敏感方言）。
+ * 空串 = 命令名不可知（变量展开/回落），独立成桶、攒不够阈值即不豁免。
+ */
+export function normalizeCommandName(name: string, dialect: ShellDialect): string {
+    const base = commandBasename(name.trim());
+    return dialect === "pwsh" ? base.toLowerCase() : base;
+}
+
+/**
+ * 形态签名（学习层的归纳键，`learn.ts` 消费）：`工具|命令|角色|形态|引号` ——
+ * 判别维度全部保留、绝不泛化到裸 token。命令段是路径词所属命令的归一名
+ * （{@link normalizeCommandName}，空串=不可知）。签名级豁免只压掉误报形态的
  * outside 询问，deny/敏感/硬路径照常。
  */
-export function shapeSignature(input: {tool: string; role: string; shape: string | null | undefined; quote: string}): string {
-    return `${input.tool}|${input.role}|${input.shape ?? "plain"}|${input.quote}`;
+export function shapeSignature(input: {tool: string; command?: string | null | undefined; role: string; shape: string | null | undefined; quote: string}): string {
+    return `${input.tool}|${input.command ?? ""}|${input.role}|${input.shape ?? "plain"}|${input.quote}`;
 }
 
 // ============================ tree-sitter 数据源 ============================
@@ -240,11 +284,11 @@ function quoteOf(raw: string): ShellWord["quote"] {
 }
 
 /** 按树节点组装一个词（raw=源切片，value=去引号反转义）。 */
-function wordFrom(source: string, node: TreeNode, role: WordRole, dialect: ShellDialect): ShellWord {
+function wordFrom(source: string, node: TreeNode, role: WordRole, dialect: ShellDialect, commandName = ""): ShellWord {
     const raw = source.slice(node.startIndex, node.endIndex);
     const value = unquoteValue(raw, dialect);
     const shape = role === "comment" ? void 0 : classifyShape(value) ?? classifyShape(raw);
-    return {raw, value, quote: quoteOf(raw), role, ...shape !== void 0 ? {shape} : {}};
+    return {raw, value, quote: quoteOf(raw), role, commandName, ...shape !== void 0 ? {shape} : {}};
 }
 
 /** bash 的 argument 角色状态（模式位/选项值吞掉）。 */
@@ -282,12 +326,12 @@ function bashWords(root: TreeNode, source: string): ShellWord[] {
         }
         if (node.type === "file_redirect") {
             const destination = node.childForFieldName("destination");
-            if (destination !== null) out.push(wordFrom(source, destination, "redirect-target", "bash"));
+            if (destination !== null) out.push(wordFrom(source, destination, "redirect-target", "bash", normalizeCommandName(state.commandName, "bash")));
             return;
         }
         if (node.type === "variable_assignment") {
             // 整词（`FOO=/etc/x`）与词法回落同形；INTERIOR 仍扫 `=` 值侧。
-            out.push(wordFrom(source, node, "assign-value", "bash"));
+            out.push(wordFrom(source, node, "assign-value", "bash", normalizeCommandName(state.commandName, "bash")));
             return;
         }
         if (node.type === "command") {
@@ -301,10 +345,10 @@ function bashWords(root: TreeNode, source: string): ShellWord[] {
                 if (field === "name") {
                     const word = wordFrom(source, child, "command", "bash");
                     state.commandName = word.value;
-                    out.push(word);
+                    out.push({...word, commandName: normalizeCommandName(word.value, "bash")});
                 } else if (field === "argument") {
                     const role = bashArgumentRole(source.slice(child.startIndex, child.endIndex), state);
-                    out.push(wordFrom(source, child, role, "bash"));
+                    out.push(wordFrom(source, child, role, "bash", normalizeCommandName(state.commandName, "bash")));
                 }
             }
             // command 内部的赋值前缀等仍递归（变量赋值在 children 里）。
@@ -331,7 +375,8 @@ function pwshWords(root: TreeNode, source: string): ShellWord[] {
         }
         if (node.type === "command") {
             const name = node.childForFieldName("command_name");
-            if (name !== null) out.push(wordFrom(source, name, "command", "pwsh"));
+            const commandName = name === null ? "" : normalizeCommandName(unquoteValue(source.slice(name.startIndex, name.endIndex), "pwsh"), "pwsh");
+            if (name !== null) out.push({...wordFrom(source, name, "command", "pwsh"), commandName});
             const elements = node.childForFieldName("command_elements");
             if (elements !== null) {
                 let lastParam = "";
@@ -339,13 +384,13 @@ function pwshWords(root: TreeNode, source: string): ShellWord[] {
                     if (child.type === "command_parameter") {
                         const match = /^[-/]([A-Za-z][A-Za-z0-9]*)/.exec(source.slice(child.startIndex, child.endIndex));
                         lastParam = match === null ? "" : match[1].toLowerCase();
-                        out.push(wordFrom(source, child, "arg", "pwsh"));
+                        out.push(wordFrom(source, child, "arg", "pwsh", commandName));
                         continue;
                     }
                     if (child.type === "command_argument_sep") continue;
                     const role = PWSH_PATTERN_PARAMS.has(lastParam) ? "pattern-arg" : "arg";
                     lastParam = "";
-                    out.push(wordFrom(source, child, role, "pwsh"));
+                    out.push(wordFrom(source, child, role, "pwsh", commandName));
                 }
             }
             return;
@@ -620,21 +665,101 @@ class WordScanner {
             value,
             quote,
             role,
+            commandName: normalizeCommandName(this.commandName, this.dialect),
             ...shape !== void 0 ? {shape} : {}
         };
     }
 }
 
+/** 按引号外逗号拆 raw（pwsh 数组构造符）；引号内逗号是字符串内容、保留。 */
+function splitRawOnTopLevelCommas(raw: string): string[] {
+    const parts: string[] = [];
+    let current = "";
+    let quote: string | undefined;
+    for (let index = 0; index < raw.length; index += 1) {
+        const char = raw[index];
+        if (quote !== undefined) {
+            current += char;
+            if (char === "`" && quote === "\"") {
+                if (index + 1 < raw.length) {
+                    current += raw[index + 1];
+                    index += 1;
+                }
+                continue;
+            }
+            if (char === quote) {
+                if (raw[index + 1] === quote) {
+                    current += raw[index + 1];
+                    index += 1;
+                    continue;
+                }
+                quote = void 0;
+            }
+            continue;
+        }
+        if (char === "'" || char === "\"") {
+            quote = char;
+            current += char;
+            continue;
+        }
+        if (char === ",") {
+            parts.push(current);
+            current = "";
+            continue;
+        }
+        current += char;
+    }
+    parts.push(current);
+    return parts.filter((part) => part !== "");
+}
+
+/**
+ * pwsh 逗号数组拆分（一词一路径）：`"a","b"`、`a,b` 的引号外逗号是数组
+ * 构造符，切成独立词、各自独立签名（多路径接缝 token 不应存在）；
+ * 引号内逗号（`"a,b"`）是字符串内容、不拆；scriptblock（`{...}`）是
+ * 语法结构、不拆。bash 的 `","` 是词内字符（方言语义即 `a,b` 一个词），不拆。
+ */
+function splitPwshCommas(words: ShellWord[]): ShellWord[] {
+    const out: ShellWord[] = [];
+    for (const word of words) {
+        if (word.role === "command" || word.role === "comment" || word.raw.trimStart().startsWith("{")) {
+            out.push(word);
+            continue;
+        }
+        const pieces = splitRawOnTopLevelCommas(word.raw);
+        if (pieces.length <= 1) {
+            out.push(word);
+            continue;
+        }
+        for (const raw of pieces) {
+            const value = unquoteValue(raw, "pwsh");
+            const shape = classifyShape(value) ?? classifyShape(raw);
+            out.push({
+                raw,
+                value,
+                quote: quoteOf(raw),
+                role: word.role,
+                commandName: word.commandName,
+                ...shape !== void 0 ? {shape} : {}
+            });
+        }
+    }
+    return out;
+}
+
 /**
  * 把一条 bash/pwsh 命令切成带角色标注的词。**tree-sitter 语法树优先**，
  * 词法回落兜底；两条数据源都永不抛错、永不返回不完整信息 ——
- * 无法识别的结构按普通词输出（保守方向）。
+ * 无法识别的结构按普通词输出（保守方向）。pwsh 的逗号数组在出口
+ * 拆成单路径词（一词一路径）。
  */
 export function parseShellWords(command: string, dialect: ShellDialect = "bash"): ShellWord[] {
     if (typeof command !== "string" || command === "") return [];
+    let words: ShellWord[];
     try {
-        return astWords(command, dialect);
+        words = astWords(command, dialect);
     } catch {
-        return new WordScanner(command, dialect).scan();
+        words = new WordScanner(command, dialect).scan();
     }
+    return dialect === "pwsh" ? splitPwshCommas(words) : words;
 }

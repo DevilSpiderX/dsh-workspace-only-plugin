@@ -42,6 +42,8 @@ export interface HitEvent {
     readonly token: string;
     /** 归纳键（形态签名，见 `learn.ts`）。 */
     readonly shapeSig: string;
+    /** token 所属命令的归一名（空串=不可知；老行为 NULL）。 */
+    readonly commandName: string;
     readonly role: string;
     readonly shape: string | null;
     readonly hitReason: string;
@@ -91,6 +93,7 @@ const hitEvents = sqliteTable("hit_events", {
     command: text("command"),
     token: text("token").notNull(),
     shapeSig: text("shape_sig").notNull(),
+    commandName: text("command_name"),
     role: text("role").notNull(),
     shape: text("shape"),
     hitReason: text("hit_reason").notNull(),
@@ -233,6 +236,7 @@ export async function openLearnDb(path: string): Promise<LearnDb> {
                     command: event.command.slice(0, 2048),
                     token: event.token.slice(0, 512),
                     shapeSig: event.shapeSig,
+                    commandName: event.commandName.slice(0, 256),
                     role: event.role,
                     shape: event.shape,
                     hitReason: event.hitReason,
@@ -326,6 +330,7 @@ export async function openLearnDb(path: string): Promise<LearnDb> {
                         command: row.command ?? "",
                         token: row.token,
                         shapeSig: row.shapeSig,
+                        commandName: row.commandName ?? "",
                         role: row.role,
                         shape: row.shape,
                         hitReason: row.hitReason,
