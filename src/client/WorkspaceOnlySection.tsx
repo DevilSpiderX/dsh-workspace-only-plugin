@@ -1,9 +1,12 @@
 import {useEffect, useState} from "react";
 import type {ChangeEvent, JSX, KeyboardEvent} from "react";
-import {Button, Input} from "@deepseek-ai/dsh-client-ui-primitives";
+import {Button, Input, Menu} from "@deepseek-ai/dsh-client-ui-primitives";
+import type {MenuEntry} from "@deepseek-ai/dsh-client-ui-primitives";
 import {globalEntries, SCOPE_OPTIONS} from "./shared.ts";
 import type {TranslateFn} from "./shared.ts";
 import type {SettingsState} from "./settings-store.ts";
+import {parseCatalogGroups} from "./model-catalog.ts";
+import type {CatalogGroupLike, CatalogModelLike} from "./model-catalog.ts";
 import css from "./WorkspaceOnlySection.module.css";
 import entryRowCss from "./entryRow.module.css";
 
@@ -28,45 +31,57 @@ export interface SectionProps {
     t: TranslateFn;
 }
 
-/** 任务 T39：`remote.session.modelCatalog()` 响应里模型条目的宽松形状。 */
-interface CatalogModelLike {
-    id: string;
-    name: string;
-    reasoning?: {efforts?: string[]; defaultEffort?: string | undefined};
-}
+/** 任务 T39：模型目录分组类型见 `./model-catalog.ts`（T39-fix 起解析也在那边，可单测）。 */
 
-/** 任务 T39：模型目录分组（分组名即 provider 名，与输入框模型下拉一致）。 */
-interface CatalogGroupLike {
-    id: string;
-    name: string;
-    models: CatalogModelLike[];
-}
-
-/** 任务 T39：模型目录的宽松解析（wire 形状，字段缺失/畸形条目直接跳过）。 */
-function parseCatalogGroups(raw: unknown): CatalogGroupLike[] {
-    const groups = (raw as {groups?: unknown} | null | undefined)?.groups;
-    if (!Array.isArray(groups)) return [];
-    const out: CatalogGroupLike[] = [];
-    for (const group of groups as Array<Record<string, unknown>>) {
-        if (typeof group.id !== "string" || typeof group.name !== "string") continue;
-        const models = Array.isArray(group.models) ? (group.models as Array<Record<string, unknown>>) : [];
-        const parsed: CatalogModelLike[] = [];
-        for (const model of models) {
-            if (typeof model.id !== "string" || typeof model.name !== "string") continue;
-            const reasoning = (model.reasoning ?? {}) as {efforts?: unknown; defaultEffort?: unknown};
-            parsed.push({
-                id: model.id,
-                name: model.name,
-                reasoning: {
-                    efforts: Array.isArray(reasoning.efforts) ? (reasoning.efforts as unknown[]).filter((effort): effort is string => typeof effort === "string") : [],
-                    defaultEffort: typeof reasoning.defaultEffort === "string" ? reasoning.defaultEffort : void 0
-                }
-            });
+/**
+ * T39-fix：官方 Menu 弹层形态的选择器（触发按钮 + `selection: "check"` 勾选 +
+ * 分组标题 MenuLabel + 组间分隔线；视觉语言与官方模型选择器同基座 ui-primitives Menu）。
+ */
+function PickRow({value, options, disabled, onPick}: {
+    value: string;
+    options: ReadonlyArray<{id: string; label: string; group?: string | undefined}>;
+    disabled: boolean;
+    onPick: (id: string) => void;
+}): JSX.Element {
+    const [open, setOpen] = useState(false);
+    const entries: MenuEntry[] = [];
+    let lastGroup: string | undefined;
+    for (const option of options) {
+        if (option.group !== undefined && option.group !== lastGroup) {
+            if (entries.length > 0) entries.push({type: "separator", id: `sep:${option.group}`});
+            entries.push({type: "label", id: `group:${option.group}`, text: option.group});
+            lastGroup = option.group;
         }
-        if (parsed.length === 0) continue;
-        out.push({id: group.id, name: group.name, models: parsed});
+        entries.push({id: option.id, label: option.label});
     }
-    return out;
+    const current = options.find((option) => option.id === value);
+    return (
+        <Menu
+            open={open}
+            portal
+            anchor={(
+                <button
+                    type="button"
+                    className={entryRowCss.mini}
+                    disabled={disabled}
+                    onClick={() => {
+                        setOpen((prior) => !prior);
+                    }}
+                >
+                    {current?.label ?? value} ▾
+                </button>
+            )}
+            items={entries}
+            selectedId={value}
+            onSelect={(id) => {
+                setOpen(false);
+                onPick(id);
+            }}
+            onClose={() => {
+                setOpen(false);
+            }}
+        />
+    );
 }
 
 /**
@@ -100,6 +115,7 @@ export function WorkspaceOnlySection(
     const [tidyBusy, setTidyBusy] = useState(false);
     const [tidyInfo, setTidyInfo] = useState<string | null>(null);
     const [catalog, setCatalog] = useState<unknown>(null);
+    const [catalogFailed, setCatalogFailed] = useState(false);
     useEffect(() => {
         load();
     }, [load]);
@@ -110,7 +126,8 @@ export function WorkspaceOnlySection(
                 const raw = await modelCatalog();
                 if (alive) setCatalog(raw);
             } catch {
-                // 模型目录不可用：下拉只剩「跟随当前模型」。
+                // 模型目录不可用：下拉只剩「跟随当前模型」，并给出提示（T39-fix）。
+                if (alive) setCatalogFailed(true);
             }
         })();
         return () => {
@@ -159,7 +176,18 @@ export function WorkspaceOnlySection(
         const modelId = learn.llmModel.slice(splitAt + 2);
         return catalogGroups.find((group) => group.id === groupId)?.models.find((model) => model.id === modelId);
     })();
-    const efforts = selectedModel?.reasoning?.efforts ?? [];
+    const efforts = selectedModel?.efforts ?? [];
+    // T39-fix：Menu 弹层的选项表（`group` 首现时由 PickRow 插分组标题）。
+    const modelOptions: ReadonlyArray<{id: string; label: string; group?: string | undefined}> = [
+        {id: "auto", label: t("learn.modelAuto")},
+        ...catalogGroups.flatMap((group) => group.models.map((model) => ({
+            id: `${group.id}::${model.id}`, label: model.name, group: group.name
+        })))
+    ];
+    const effortOptions: ReadonlyArray<{id: string; label: string; group?: string | undefined}> = [
+        {id: "default", label: t("learn.effortDefault")},
+        ...efforts.map((effort) => ({id: effort.id, label: effort.name}))
+    ];
     return (
         <div className={css.page}>
             <div className={css.pageHead}>
@@ -348,6 +376,9 @@ export function WorkspaceOnlySection(
             </div>
             <div className={css.panel}>
                 <div className={css.title}>{t("learn.title")}</div>
+                {/* T39-fix：写回失败/目录失败的错误不再无声（此前只进顶部描述区，易被当"无反应"）。 */}
+                {state.error != null && state.error !== "" ? <div className={css.learnError}>{state.error}</div> : null}
+                {catalogFailed ? <div className={css.learnError}>{t("learn.catalogError")}</div> : null}
                 <div className={entryRowCss.list}>
                     <div className={css.desc}>{t("learn.desc")}</div>
                     <div className={entryRowCss.item}>
@@ -365,23 +396,14 @@ export function WorkspaceOnlySection(
                     </div>
                     <div className={entryRowCss.item}>
                         <span className={entryRowCss.path}>{t("learn.model")}</span>
-                        <select
-                            className={entryRowCss.grow}
-                            disabled={busy || !state.writable}
+                        <PickRow
                             value={learn.llmModel}
-                            onChange={(event) => {
-                                setLearnConfig({llmModel: event.target.value, llmReasoningEffort: "default"});
+                            options={modelOptions}
+                            disabled={busy || !state.writable}
+                            onPick={(id) => {
+                                setLearnConfig({llmModel: id, llmReasoningEffort: "default"});
                             }}
-                        >
-                            <option value="auto">{t("learn.modelAuto")}</option>
-                            {catalogGroups.map((group) => (
-                                <optgroup key={group.id} label={group.name}>
-                                    {group.models.map((model) => (
-                                        <option key={`${group.id}::${model.id}`} value={`${group.id}::${model.id}`}>{model.name}</option>
-                                    ))}
-                                </optgroup>
-                            ))}
-                        </select>
+                        />
                     </div>
                     {efforts.length === 0 ? (
                         <div className={entryRowCss.item}>
@@ -391,19 +413,14 @@ export function WorkspaceOnlySection(
                     ) : (
                         <div className={entryRowCss.item}>
                             <span className={entryRowCss.path}>{t("learn.effort")}</span>
-                            <select
-                                className={entryRowCss.grow}
+                            <PickRow
+                                value={learn.llmReasoningEffort === "default" || efforts.some((effort) => effort.id === learn.llmReasoningEffort) ? learn.llmReasoningEffort : "default"}
+                                options={effortOptions}
                                 disabled={busy || !state.writable}
-                                value={learn.llmReasoningEffort}
-                                onChange={(event) => {
-                                    setLearnConfig({llmReasoningEffort: event.target.value});
+                                onPick={(id) => {
+                                    setLearnConfig({llmReasoningEffort: id});
                                 }}
-                            >
-                                <option value="default">{t("learn.effortDefault")}</option>
-                                {efforts.map((effort) => (
-                                    <option key={effort} value={effort}>{effort}</option>
-                                ))}
-                            </select>
+                            />
                         </div>
                     )}
                     <div className={entryRowCss.item}>
