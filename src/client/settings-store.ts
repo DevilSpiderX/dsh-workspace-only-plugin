@@ -32,8 +32,10 @@ interface SettingsDescribeResponse {
     readonly writable?: unknown;
 }
 
-/** 任务 T39：学习层 Config 字段的展示形状（LLM 整理开关/模型/推理等级）。 */
+/** 任务 T39：学习层 Config 字段的展示形状（自动审批开关/LLM 整理开关/模型/推理等级）。 */
 export interface LearnConfigView {
+    /** T40：学习结果自动审批总闸（关闭后继续学习、只是每次询问）。 */
+    autoApproveFromHistory: boolean;
     llmAssist: boolean;
     llmModel: string;
     llmReasoningEffort: string;
@@ -322,6 +324,7 @@ const WorkspaceOnlySettingsController = class {
             state.writable = writable;
             state.enabled = view.value?.enabled === true;
             state.learnConfig = {
+                autoApproveFromHistory: view.value?.autoApproveFromHistory !== false,
                 llmAssist: view.value?.llmAssist !== false,
                 llmModel: typeof view.value?.llmModel === "string" ? view.value.llmModel as string : "auto",
                 llmReasoningEffort: typeof view.value?.llmReasoningEffort === "string" ? view.value.llmReasoningEffort as string : "default"

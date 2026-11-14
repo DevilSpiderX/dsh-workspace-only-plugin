@@ -131,6 +131,8 @@ export const Config = z.object({
     /** 学习事件（learn.sqlite3 的 hit_events）保留天数，定期压实。 */
     learnRetentionDays: z.number().step(1).min(1).default(90),
     // T39 L2：审批意图自动通过（从既有判决归纳特征分层统计，置信达标自动放行）。
+    // T40：扩义为「学习结果自动审批」总闸——false 时 L1 形态豁免与 L2 自动通过
+    // 一律不作用（每次照常弹窗），但学习（记账/归纳/LLM 整理）照常继续。
     autoApproveFromHistory: z.boolean().default(true).volatile(),
     autoApproveThreshold: z.number().min(0.5).max(1).step(0.01).default(0.95).volatile(),
     autoApproveMinSamples: z.number().step(1).min(1).default(5).volatile(),

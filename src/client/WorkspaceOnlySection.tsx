@@ -166,7 +166,7 @@ export function WorkspaceOnlySection(
         return option === void 0 ? String(scope) : t(option.labelKey);
     };
     // 任务 T39：学习层配置的展示值（旧宿主缺字段时取默认）。
-    const learn = state.learnConfig ?? {llmAssist: true, llmModel: "auto", llmReasoningEffort: "default"};
+    const learn = state.learnConfig ?? {autoApproveFromHistory: true, llmAssist: true, llmModel: "auto", llmReasoningEffort: "default"};
     const catalogGroups = parseCatalogGroups(catalog);
     const selectedModel = ((): CatalogModelLike | undefined => {
         if (learn.llmModel === "auto") return void 0;
@@ -381,6 +381,20 @@ export function WorkspaceOnlySection(
                 {catalogFailed ? <div className={css.learnError}>{t("learn.catalogError")}</div> : null}
                 <div className={entryRowCss.list}>
                     <div className={css.desc}>{t("learn.desc")}</div>
+                    <div className={entryRowCss.item}>
+                        <span className={entryRowCss.path}>{t("learn.autoApprove")}</span>
+                        <button
+                            type="button"
+                            className={entryRowCss.mini}
+                            disabled={busy || !state.writable}
+                            onClick={() => {
+                                setLearnConfig({autoApproveFromHistory: !learn.autoApproveFromHistory});
+                            }}
+                        >
+                            {learn.autoApproveFromHistory ? t("on") : t("off")}
+                        </button>
+                    </div>
+                    <div className={css.desc}>{t("learn.autoApproveDesc")}</div>
                     <div className={entryRowCss.item}>
                         <span className={entryRowCss.path}>{t("learn.assist")}</span>
                         <button
