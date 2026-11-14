@@ -32,6 +32,13 @@ interface SettingsDescribeResponse {
     readonly writable?: unknown;
 }
 
+/** 任务 T39：学习层 Config 字段的展示形状（LLM 整理开关/模型/推理等级）。 */
+export interface LearnConfigView {
+    llmAssist: boolean;
+    llmModel: string;
+    llmReasoningEffort: string;
+}
+
 /** 一条「最近询问」记录的展示形状。 */
 export interface RecentAskView {
     dir: string;
@@ -61,13 +68,15 @@ export interface SettingsState {
     sessions: SessionScopeView[];
     /** 任务 T16：Host 的 ask 截止时间，供卡片自毁兜底（丢失的 `askDone` 不能让过期卡片永远赖着）。 */
     dialogTimeoutMs: number;
+    /** 任务 T39：学习层 Config 字段（可缺席=旧宿主/未加载，UI 取默认值）。 */
+    learnConfig?: LearnConfigView;
 }
 
 /** settings 的 namespace 视图（wire 形状，宽松读取）。 */
 interface NamespaceViewLike {
     readonly ns?: unknown;
     readonly revision?: unknown;
-    readonly value?: {readonly enabled?: unknown} | undefined;
+    readonly value?: Record<string, unknown> | undefined;
 }
 
 /** `workspaceOnly/snapshot` 的响应（wire 形状，宽松读取）。 */
@@ -253,6 +262,53 @@ const WorkspaceOnlySettingsController = class {
         }
     }
 
+    /** 任务 T39：写回学习层 Config 字段（LLM 整理开关/模型/推理等级）。 */
+    async setLearnConfig(fields: Record<string, unknown>): Promise<void> {
+        const view = this.view;
+        const state = this.store.getSnapshot();
+        if (view === void 0 || !state.writable) return;
+        const generation = ++this.generation;
+        this.store.update((draft) => {
+            draft.status = "saving";
+            draft.error = null;
+        });
+        try {
+            const ops = Object.entries(fields).map(([key, value]) => ({
+                op: "set",
+                path: [key],
+                value
+            }));
+            const next = this.unwrap(await this.remote.settings.mutate("workspace-only", ops, typeof view.revision === "number" ? view.revision : void 0)) as NamespaceViewLike | undefined;
+            if (generation !== this.generation) return;
+            this.accept(next?.ns === "workspace-only" && next !== void 0 ? next : view, true);
+        } catch (error) {
+            if (generation !== this.generation) return;
+            this.fail(error);
+        }
+    }
+
+    /** 任务 T39：重置学习数据（learn.sqlite3 全部学习表清空、重新开始学习）。 */
+    async resetLearnData(): Promise<unknown> {
+        try {
+            const result = this.unwrap(await this.call("resetLearnData", {}));
+            await this.refreshRemote();
+            return result;
+        } catch (error) {
+            this.fail(error);
+            return void 0;
+        }
+    }
+
+    /** 任务 T39：立即执行一轮 LLM 整理，返回运行摘要（TidyRunSummary 宽松形状）。 */
+    async runLlmTidy(): Promise<unknown> {
+        try {
+            return this.unwrap(await this.call("runLlmTidy", {}));
+        } catch (error) {
+            this.fail(error);
+            return void 0;
+        }
+    }
+
     dispose(): void {
         this.generation += 1;
         this.view = void 0;
@@ -265,6 +321,11 @@ const WorkspaceOnlySettingsController = class {
             state.error = null;
             state.writable = writable;
             state.enabled = view.value?.enabled === true;
+            state.learnConfig = {
+                llmAssist: view.value?.llmAssist !== false,
+                llmModel: typeof view.value?.llmModel === "string" ? view.value.llmModel as string : "auto",
+                llmReasoningEffort: typeof view.value?.llmReasoningEffort === "string" ? view.value.llmReasoningEffort as string : "default"
+            };
             state.revision = typeof view.revision === "number" ? view.revision : state.revision;
         });
     }

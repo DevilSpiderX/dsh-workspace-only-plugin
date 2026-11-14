@@ -72,6 +72,97 @@ function readAsar(asarPath: string, entry: string): string | undefined {
     }
 }
 
+/** 读 asar 内 `<dir>/` 下全部脚本文件（含子目录）的拼接文本，目录不存在返回 undefined。 */
+function readAsarDir(asarPath: string, dir: string): string | undefined {
+    let handle: number | undefined;
+    try {
+        handle = openSync(asarPath, "r");
+    } catch {
+        return void 0;
+    }
+    try {
+        const head = Buffer.alloc(16);
+        readSync(handle, head, 0, 16, 0);
+        const headerSize = head.readUInt32LE(4);
+        const header = Buffer.alloc(headerSize);
+        readSync(handle, header, 0, headerSize, 8);
+        const stringSize = header.readUInt32LE(4);
+        const index = JSON.parse(header.toString("utf8", 8, 8 + stringSize));
+        const dataStart = 8 + headerSize;
+        let node: unknown = index;
+        for (const part of dir.split("/")) {
+            node = ((node as {files?: Record<string, unknown>}).files ?? {})[part];
+            if (node === void 0) return void 0;
+        }
+        const parts: string[] = [];
+        const walk = (current: {files?: Record<string, unknown>}, prefix: string): void => {
+            for (const [name, child] of Object.entries(current.files ?? {})) {
+                const childNode = child as {files?: Record<string, unknown>; offset?: unknown; size?: unknown};
+                const path = prefix === "" ? name : `${prefix}/${name}`;
+                if (childNode.files !== void 0) {
+                    walk(childNode, path);
+                    continue;
+                }
+                if (!/\.(?:m|c)?js$/.test(path)) continue;
+                const offset = dataStart + Number(childNode.offset);
+                const size = Number(childNode.size);
+                const body = Buffer.alloc(size);
+                readSync(handle as number, body, 0, size, offset);
+                parts.push(`// ${path}\n${body.toString("utf8")}`);
+            }
+        };
+        walk(node as {files?: Record<string, unknown>}, "");
+        return parts.length === 0 ? void 0 : parts.join("\n");
+    } catch {
+        return void 0;
+    } finally {
+        closeSync(handle);
+    }
+}
+
+/** 读目录下（含子目录）全部脚本文件的拼接文本，目录不存在返回 undefined。 */
+function readDirScripts(dir: string): string | undefined {
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) return void 0;
+    try {
+        const parts: string[] = [];
+        const walk = (current: string, prefix: string): void => {
+            for (const entry of readdirSync(current, {withFileTypes: true})) {
+                const path = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
+                if (entry.isDirectory()) {
+                    walk(join(current, entry.name), path);
+                    continue;
+                }
+                if (!/\.(?:m|c)?js$/.test(entry.name)) continue;
+                parts.push(`// ${path}\n${readFileSync(join(current, entry.name), "utf8")}`);
+            }
+        };
+        walk(dir, "");
+        return parts.length === 0 ? void 0 : parts.join("\n");
+    } catch {
+        return void 0;
+    }
+}
+
+/**
+ * 聚合 `<pkg>/lib/` 全部脚本文本。词汇存在性看守用：0.2.2-rc.3 起平台包拆多
+ * chunk（如 dsh-tools 的 pre-execute 词汇在 lib/pipeline.js），只查 lib/index.js
+ * 会取空集、把打包布局变化误报成契约漂移——词汇落在哪个 chunk 不是契约，存在即真。
+ */
+function locateLibs(pkg: string, roots: SourceRoot[]): Located | undefined {
+    for (const root of roots) {
+        const entry = `dsh/node_modules/@deepseek-ai/${pkg}/lib`;
+        if (root.kind === "asar") {
+            const text = readAsarDir(root.base, entry);
+            if (text !== void 0) return {text, origin: root.base};
+        } else {
+            const dir = join(root.base, pkg, "lib");
+            const text = readDirScripts(dir);
+            if (text !== void 0) return {text, origin: dir};
+        }
+    }
+    return void 0;
+}
+
 /** 一个候选源根（asar 归档或 node_modules 目录）。 */
 interface SourceRoot {
     kind: "asar" | "dir";
@@ -152,11 +243,12 @@ function main(): void {
         }
     }
 
-    // 2. dsh-tools：pre-execute 决策词汇。
+    // 2. dsh-tools：pre-execute 决策词汇（聚合 lib/ 全部 chunk——0.2.2-rc.3 起
+    //    词汇在 lib/pipeline.js，只查 index.js 会把拆包误报成漂移）。
     {
-        const found = locate("dsh-tools", "lib/index.js", roots);
+        const found = locateLibs("dsh-tools", roots);
         if (found === void 0) {
-            record(false, "dsh-tools present", "package not found in any source root");
+            record(false, "dsh-tools present", "package lib/ not found in any source root");
         } else {
             const shapes = ['kind: "allow"', 'kind: "deny"', 'gate.kind === "ask"', 'decision.kind === "cancel"', '"tools/pre-execute"'];
             const gone = shapes.filter((needle) => !found.text.includes(needle));
@@ -299,9 +391,9 @@ function main(): void {
     //     success/error 词汇，以及 `command/run`/`command/done` 生命周期日志
     //     （平台已知事件，不是裸自定义事件）。
     {
-        const found = locate("dsh-commands", "lib/index.js", roots);
+        const found = locateLibs("dsh-commands", roots);
         if (found === void 0) {
-            record(false, "command surface (T30)", "dsh-commands not found in any source root — the /wo-allow command registration cannot be verified");
+            record(false, "command surface (T30)", "dsh-commands lib/ not found in any source root — the /wo-allow command registration cannot be verified");
         } else {
             const shapes = ['"command/run"', '"command/done"', "rawInput", 'kind: "success"', 'kind: "error"'];
             const gone = shapes.filter((needle) => !found.text.includes(needle));

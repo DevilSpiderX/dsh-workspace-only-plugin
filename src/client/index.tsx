@@ -10,7 +10,7 @@ import {WorkspaceOnlyAskCard} from "./WorkspaceOnlyAskCard.tsx";
 import {WorkspaceOnlyPendingBadge} from "./pending-notice.tsx";
 import type {PendingAskView, SubagentAddressLike, TranslateFn} from "./shared.ts";
 
-const inject = ["connection", "slots", "locale", "remote", "remote.settings", "uiSession", "sessions", "uiWorkspace"];
+const inject = ["connection", "slots", "locale", "remote", "remote.settings", "remote.session", "uiSession", "sessions", "uiWorkspace"];
 /** 任务 T16：在 Host 对话框超时之上再加一段宽限，作为卡片自毁兜底。 */
 const SELF_DESTRUCT_GRACE_MS = 15_000;
 
@@ -94,6 +94,12 @@ function apply(ctx: ClientContext): void {
     const controller = new WorkspaceOnlySettingsController(ctx.remote, ctx.connection);
     const load = () => controller.load();
     const select = (enabled: boolean) => controller.select(enabled);
+    // 任务 T39：模型目录取自 `remote.session.modelCatalog()`（与输入框模型下拉同一来源）。
+    // 稳定引用：进设置卡 useEffect 依赖，内联箭头会每次渲染触发重拉。
+    const modelCatalog = (): Promise<unknown> => {
+        const session = (ctx.remote as {session?: {modelCatalog?: () => Promise<unknown>}} | undefined)?.session;
+        return session?.modelCatalog?.() ?? Promise.resolve(void 0);
+    };
     const injected = () => ({
         hooks: {workspaceOnly: controller.store},
         load,
@@ -103,7 +109,11 @@ function apply(ctx: ClientContext): void {
         addDeny: (entry: string) => controller.addDeny(entry),
         removeDeny: (entry: string) => controller.removeDeny(entry),
         clearRecent: () => controller.clearRecent(),
-        setScope: (sessionId: string, scope: string) => controller.setScope(sessionId, scope)
+        setScope: (sessionId: string, scope: string) => controller.setScope(sessionId, scope),
+        setLearnConfig: (fields: Record<string, unknown>) => controller.setLearnConfig(fields),
+        resetLearnData: () => controller.resetLearnData(),
+        runLlmTidy: () => controller.runLlmTidy(),
+        modelCatalog
     });
     ctx.effect(() => ctx.locale.register("settings.workspaceOnly", {
         zh,

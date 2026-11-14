@@ -65,6 +65,13 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
 | `learnFromDecisions` | `true` | 无感学习层总开关（T33）：从既有三键判决按形态签名自动归纳豁免，无任何新 UI；详见「无感学习层」 |
 | `learnThreshold` | `3` | 学习层自动豁免的放行阈值（且用户拒绝必须为 0；任何一次用户拒绝立即回撤豁免） |
 | `learnRetentionDays` | `90` | 学习事件（`learn.sqlite3` 的 `hit_events`）保留天数，超期自动压实 |
+| `autoApproveFromHistory` | `true` | 审批意图学习（L2）：从审批历史归纳「用户意图」，样本足够且零拒绝的特征下次直接自动通过、不弹窗；详见「审批意图学习与自动通过」 |
+| `autoApproveThreshold` | `0.95` | L2 自动通过的合成置信阈值（0.5–1；Beta 平滑放行率按层加权合成） |
+| `autoApproveMinSamples` | `5` | L2 自动通过的最少样本数（精确特征 + 组先验合计；低于此值一律弹窗） |
+| `autoApproveSensitive` | `false` | 敏感文件也允许 L2 自动通过（默认关：敏感文件永远弹窗，开启后用户自担） |
+| `llmAssist` | `true` | 用大模型自动整理学习数据（归纳命令/目录分组规律提高学习准确率）；可在设置页关闭 |
+| `llmModel` | `"auto"` | 整理用模型：`"auto"`=跟随用户当前使用的模型；或 `"<provider>::<model>"` 指定（设置页下拉列出 dsh 模型目录） |
+| `llmReasoningEffort` | `"default"` | 整理用模型的推理等级（`default` 或模型支持的档位名） |
 
 手动编辑示例（profile 的 `cordis.patch.yml` 追加）：
 
@@ -117,11 +124,33 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
 - fail-safe：`learn.sqlite3` 损坏或 `node:sqlite` 不可用 = 学习层整体停用（回到保守询问），门禁的 fail-closed 正确性从不依赖学习层；`learnFromDecisions: false` 一键停学；
 - 管理面：Remote `learnedFeatures`/`removeLearnedFeature`/`searchLearned`（模糊搜索 token/命令/签名，调试误判）。
 
+### 审批意图学习与自动通过（L2，T39）
+
+形态签名（L1）只治「路径形状误报」；L2 学的是**审批意图**——「这类调用用户总是批」，特征是**工具 | 命令名 | 目录**的分层组合（不看形态），意图层直接闭环：
+
+- **分层特征键**：K1=`工具|命令名|目录`、K2=`工具|命令名`、K3=`工具|目录`、K4=`工具` 四层各记样本/放行/拒绝计数（`learned_policies` 表），越精确的层权重越高（0.4/0.3/0.2/0.1）；
+- **置信**：每层 Beta 平滑放行率 `(放行+1)/(样本+2)` 按权重合成，≥ `autoApproveThreshold`（默认 0.95）且总样本 ≥ `autoApproveMinSamples`（默认 5）才触发自动通过；四层同步放行约 19 次过 0.95 置信，`autoApproveMinSamples` 是下限闸门；
+- **自动通过三条件**：合成置信够 ∧ 样本够 ∧ **零用户拒绝** ∧ 非敏感（`autoApproveSensitive: false` 时敏感文件永远弹窗）。命中的调用不弹窗直接放行，`approval_events` 记 `verdict: "auto-approved"`（通道 `auto`）；
+- **负样本只认用户 deny**（`user-denied`/`user-rejected`，与 L1 同口径）：精确特征（K1）被拒过一次即**永久**不再自动通过（active 撤销）；宽层（K2–K4）的拒绝不牵连整层、只稀释该层置信——否则一次拒绝会让全部同工具命令永不自动通过；超时/无应答不算拒绝；
+- **auto-approved 不回流训练**：自动通过的调用不进任何学习样本（L1/L2 都不吃自己的产出），杜绝自我强化；真弹窗判决才是训练数据；
+- **安全红线不变**：deny 规则最先、敏感判定与白名单语义不受影响、失败方向 fail-closed（学习层不可用/不确定一律弹窗）。
+
+### 学习数据管理与 LLM 整理（设置页，T39）
+
+设置 → Workspace Only 的「学习与自动整理」面板：
+
+- **用大模型自动整理学习数据**（`llmAssist`，可关闭）：把审批事件里的工具/命令名/目录/判决样本交给所选模型归纳**分组规律**（如 `docker` 命令族、某目录下的脚本族），落成组规则（`llm_group_rules`）为 L2 提供组先验——新特征只要落进已知分组就带着组的样本量起步，学习收敛快得多；
+- **整理用模型**（`llmModel`）：默认「跟随当前模型」（dsh 当前选中的模型），也可下拉指定（列出 dsh 模型目录的全部模型，按 provider 分组）与推理等级（`llmReasoningEffort`）；
+- **LLM 只整理、不裁决**：模型输出只取「哪些调用属于一组」的**分组匹配规则**（工具 + 命令 glob + 目录 glob），数字与裁决字段一律无视、组计数由服务端从真实样本实算——LLM 无法通过虚报数字抬高置信；产物同样过方向锁与 deny 传染（组内有拒绝则整组否决自动通过）；每次整理落 `llm_tidy_runs` 审计（模型、prompt 摘要、结果、应用条数），失败弃用不阻塞门禁；
+- **自动整理时机**：新审批事件 ≥ 20 条或距上次整理 ≥ 24 小时自动触发（异步防抖），也可「立即整理」手动触发；
+- **重置学习数据**：二次确认后清空全部学习数据（命中事件、形态豁免、意图策略、组规则、审批事件）重新开始学习；
+- **隐私提示**：整理时只把工具名、命令名、目标目录、判决发往所选模型，不含参数与文件内容。
+
 ### 审批事件记录（learn.sqlite3）
 
-**每次弹窗都记录**（`approval_events` 表），不论最终通过、拒绝还是超时——供事后分析误报与审批行为：时间、工具、命令全文、目标目录、触发原因、命中目标列表、判决（含 deny 细分原因）、通道、裁决耗时、会话 id。批量放行（白名单覆盖、没弹窗）不记录。Remote `searchApprovals` 支持按工具/命令/目录/原因/判决模糊搜索；事件随 `learnRetentionDays` 定期压实。
+**每次弹窗都记录**（`approval_events` 表），不论最终通过、拒绝还是超时——供事后分析误报与审批行为：时间、工具、命令全文、目标目录、触发原因、命中目标列表、判决（含 deny 细分原因）、通道、裁决耗时、会话 id。批量放行（白名单覆盖、没弹窗）不记录；L2 自动通过的调用记 `verdict: "auto-approved"`（通道 `auto`），只作审计、不进学习样本。Remote `searchApprovals` 支持按工具/命令/目录/原因/判决模糊搜索；事件随 `learnRetentionDays` 定期压实。
 
-schema 演进走 **Flyway 式版本化迁移**（`migrations/` 目录的 up/down SQL 成对文件 + `_migrations` 历史表，启动时自动应用）：结构变更留痕可回查，破坏性变更直接写在迁移里（数据可丢弃、不做兼容迁移）。
+schema 演进走 **Flyway 式版本化迁移**（`migrations/` 目录的 up/down SQL 成对文件 + `_migrations` 历史表，启动时自动应用）：结构变更留痕可回查，破坏性变更直接写在迁移里（数据可丢弃、不做兼容迁移）。当前表：`hit_events`（形态命中）、`learned_exemptions`（L1 形态豁免）、`approval_events`（审批事件）、`learned_policies`（L2 意图策略，四层特征键）、`llm_group_rules`（LLM 整理产出的组规则）、`llm_tidy_runs`（LLM 整理审计）。
 
 ## deny 原因与 agent 感知（T33）
 
@@ -237,7 +266,7 @@ pnpm install && pnpm build        # 类型检查（tsc --noEmit，strict）+ 构
 pnpm test                         # 单点测试（node:test，tests/*.test.ts，函数级；单跑一个：--test-name-pattern="<名字>"）
 node scripts/verify-scanner.ts   # 词法扫描用例（POSIX + Windows，含误报对照、语法层改善/回归组）
 node scripts/verify-allow-command.ts  # /wo-allow 目录解析用例（家目录展开、绝对路径判定、归一化）
-node scripts/verify-learn.ts     # 无感学习层用例（判决分类、形态签名、归纳回撤、fail-safe 降级）
+node scripts/verify-learn.ts     # 无感学习层用例（判决分类、形态签名、归纳回撤、L2 意图自动通过、LLM 组规则、fail-safe 降级）
 node scripts/verify-session-cleanup.ts  # 孤儿会话白名单目录清理用例（已知 id 集合、宽限期、fail-safe）
 node scripts/check-compat.ts     # 对本机 dsh 安装做契约自检
 ```
@@ -251,6 +280,7 @@ node scripts/check-compat.ts     # 对本机 dsh 安装做契约自检
 - 「总是允许该目录」新写的会话级条目只对本会话及其子代理生效（绑主会话血缘根）；旧的全局字符串条目保持处处生效；T9 时代按项目共享的 `{root, dir}` 条目已被软忽略（不匹配不显示，配置里留着也无害），重新授权即写成新会话级条目；
 - **T25：会话级条目搬家**——不再存 profile 的 `cordis.patch.yml`（`always` 只留全局字符串条目），改存 `<DSH_HOME>/dsh-workspace-only-plugin/sessions/<主会话id>/whitelist.json`。升级后首次启动自动把 `always` 里残留的 `{session, dir}` 条目迁往对应文件（迁移失败的组留在 Config 里继续生效并自动重试）；管理 RPC 形状不变（`snapshot.always` 仍返回 `{session, dir}` / 字符串条目）。
 - **T31：孤儿目录清理**——会话删除后残留的 `sessions/<主会话id>/` 目录自动清掉（启动时 + 每 24h 一轮；归档不清、删除才清，判据与 fail-safe 见「会话级白名单文件」节）。
+- **T39：学习层重设计**——新增 L2 审批意图学习（特征=工具|命令名|目录，样本够且零拒绝的调用自动通过、`verdict: "auto-approved"`）、LLM 自动整理学习数据（`llmAssist` 可关，`llmModel` 默认跟随当前模型）与设置页「学习与自动整理」面板（重置学习数据/立即整理/模型选择）；L1 形态豁免与安全红线不变。管理 RPC 新增 `resetLearnData`/`learnedPolicies`/`removeLearnedPolicy(featureKey)`/`runLlmTidy`/`llmTidyRuns(limit)`。
 - 管理 RPC 有变更（若你有脚本直调 `workspaceOnly/*`）：`setBypass(sessionId, enabled)` → `setScope(sessionId, scope)`（`scope` ∈ `workspace` / `outside-read` / `outside-write`），新增 `addGlobalAlways(dir)`，`snapshot` 的 `sessions[]` 由 `bypass: boolean` 改为 `scope: string`。
 - 管理 RPC 的 `args` 字段名（`sessionId`/`scope`/`dir`/`entry`/`requestId`/`choice`）即各方法的 wire 契约，由插件注册的 strict 调用描述符固定（此前源码签名推断的方式在压缩产物上会全部报 `args fields do not match the descriptor`）；改方法签名或调用载荷后跑 `node scripts/verify-remote-service.ts` 核对三方一致。
 

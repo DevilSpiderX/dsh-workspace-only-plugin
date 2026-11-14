@@ -44,7 +44,19 @@ export const zh = {
     "alwaysSensitive": "总是允许此类文件",
     "ask.deny": "拒绝",
     "pending.badge": "待审批 {n}",
-    "pending.tip": "Workspace Only：{n} 个子代理的访问请求等待确认，点击查看"
+    "pending.tip": "Workspace Only：{n} 个子代理的访问请求等待确认，点击查看",
+    "learn.title": "学习与自动整理",
+    "learn.desc": "从你的审批中学习规律：同类访问批得越多越容易被自动通过（仅限非敏感访问，被拒绝过的记录永不自动通过）。大模型整理会把规律分组、提高判断准确率。",
+    "learn.assist": "用大模型自动整理学习数据",
+    "learn.model": "整理用模型",
+    "learn.modelAuto": "跟随当前模型",
+    "learn.effort": "推理等级",
+    "learn.effortDefault": "默认",
+    "learn.reset": "重置学习数据",
+    "learn.resetConfirm": "确认重置？再次点击执行",
+    "learn.tidy": "立即整理",
+    "learn.tidyRunning": "整理中…",
+    "learn.privacy": "整理时会把审批事件中的工具名、命令名与目录发送到所选模型；除此之外的内容不会发出。"
 };
 
 /** 文案字典形状（zh 为键集真源；en 漏键/多键在编译期报错）。 */
@@ -96,5 +108,17 @@ export const en: WorkspaceOnlyDictionary = {
     "alwaysSensitive": "Always allow files like this",
     "ask.deny": "Deny",
     "pending.badge": "Pending {n}",
-    "pending.tip": "Workspace Only: {n} subagent access request(s) awaiting confirmation — click to open"
+    "pending.tip": "Workspace Only: {n} subagent access request(s) awaiting confirmation — click to open",
+    "learn.title": "Learning & automatic tidy",
+    "learn.desc": "Learns from your approvals: repeated approvals of the same kind of access earn auto-approval (non-sensitive access only; anything you denied is never auto-approved). LLM tidy groups the patterns to improve accuracy.",
+    "learn.assist": "Tidy learning data with an LLM",
+    "learn.model": "Tidy model",
+    "learn.modelAuto": "Follow current model",
+    "learn.effort": "Reasoning effort",
+    "learn.effortDefault": "Default",
+    "learn.reset": "Reset learning data",
+    "learn.resetConfirm": "Confirm reset? Click again to run",
+    "learn.tidy": "Tidy now",
+    "learn.tidyRunning": "Tidying…",
+    "learn.privacy": "Tidying sends the tool name, command name and directory of approval events to the selected model; nothing else leaves your machine."
 };
