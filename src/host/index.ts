@@ -49,7 +49,7 @@ import type {Session} from "@deepseek-ai/dsh-session";
  *
  * 配置放在插件的 DSH 0.2 Config（持久化在活动 profile 的 `cordis.patch.yml`）里，
  * 取代已废弃的 0.1 设置通道及其 apiproxy 白名单 patch。运行时写入的字段
- * （`enabled`、`always`）是 `.volatile()` 的，设置表单与本插件共享同一实时引用，
+ * （`enabled`、`always` 及学习/LLM 字段）是 `.volatile()` 的，设置表单与本插件共享同一实时引用，
  * 经设置服务写回。
  *
  * 工作区外的写还要额外受 `workspace-write` 模式会话的内核围栏约束（此时工具的
@@ -131,15 +131,15 @@ export const Config = z.object({
     /** 学习事件（learn.sqlite3 的 hit_events）保留天数，定期压实。 */
     learnRetentionDays: z.number().step(1).min(1).default(90),
     // T39 L2：审批意图自动通过（从既有判决归纳特征分层统计，置信达标自动放行）。
-    autoApproveFromHistory: z.boolean().default(true),
-    autoApproveThreshold: z.number().min(0.5).max(1).step(0.01).default(0.95),
-    autoApproveMinSamples: z.number().step(1).min(1).default(5),
+    autoApproveFromHistory: z.boolean().default(true).volatile(),
+    autoApproveThreshold: z.number().min(0.5).max(1).step(0.01).default(0.95).volatile(),
+    autoApproveMinSamples: z.number().step(1).min(1).default(5).volatile(),
     // 敏感目标默认永不自动通过；置 true 由用户自担（敏感面仍过 deny 规则）。
-    autoApproveSensitive: z.boolean().default(false),
+    autoApproveSensitive: z.boolean().default(false).volatile(),
     // T39 LLM 整理：可开关；模型 "auto" = 跟随用户当前模型，或 "provider::model" 显式指定。
-    llmAssist: z.boolean().default(true),
-    llmModel: z.string().default("auto"),
-    llmReasoningEffort: z.string().default("default")
+    llmAssist: z.boolean().default(true).volatile(),
+    llmModel: z.string().default("auto").volatile(),
+    llmReasoningEffort: z.string().default("default").volatile()
 });
 
 /**
