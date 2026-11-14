@@ -26,7 +26,11 @@ export interface LearnOptions {
     readonly threshold: () => number;
     /** `Config.learnRetentionDays`：事件保留天数（压实）。 */
     readonly retentionDays: () => number;
-    /** `Config.autoApproveFromHistory`：L2 审批意图自动通过总开关（T39）。 */
+    /**
+     * `Config.autoApproveFromHistory`：**学习结果自动审批总闸**（T39 加、T40 扩义）——
+     * false 时 `isExempt`（L1 形态豁免）与 `shouldAutoApprove`（L2 意图自动通过）
+     * 一律 false=照常弹窗，而 record/recordPolicy 归纳照常（继续学习是硬需求）。
+     */
     readonly autoApprove: () => boolean;
     /** `Config.autoApproveThreshold`：L2 自动通过的合成置信阈值（T39）。 */
     readonly autoApproveThreshold: () => number;
@@ -384,6 +388,9 @@ export function createLearnService(dbPath: string, options: LearnOptions): Learn
             });
         },
         isExempt(signature) {
+            // T40：自动审批总闸——关闸时 L1 形态豁免同样不作用（每次都询问），
+            // 学习（record 归纳）不受影响；开关读取不确定按关处理（fail-closed）。
+            if (options.autoApprove() !== true) return false;
             return cache.get(signature)?.exempt === true;
         },
         features() {

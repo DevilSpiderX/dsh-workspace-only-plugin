@@ -65,7 +65,7 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
 | `learnFromDecisions` | `true` | 无感学习层总开关（T33）：从既有三键判决按形态签名自动归纳豁免，无任何新 UI；详见「无感学习层」 |
 | `learnThreshold` | `3` | 学习层自动豁免的放行阈值（且用户拒绝必须为 0；任何一次用户拒绝立即回撤豁免） |
 | `learnRetentionDays` | `90` | 学习事件（`learn.sqlite3` 的 `hit_events`）保留天数，超期自动压实 |
-| `autoApproveFromHistory` | `true` | 审批意图学习（L2）：从审批历史归纳「用户意图」，样本足够且零拒绝的特征下次直接自动通过、不弹窗；详见「审批意图学习与自动通过」 |
+| `autoApproveFromHistory` | `true` | **自动审批总闸**（T40）：学习成熟后自动通过、不弹窗（L1 形态豁免 + L2 意图自动通过都受它控）；关闭后**照常学习**、只是每次都会询问，重新打开后积累的数据立即生效；详见「审批意图学习与自动通过」 |
 | `autoApproveThreshold` | `0.95` | L2 自动通过的合成置信阈值（0.5–1；Beta 平滑放行率按层加权合成） |
 | `autoApproveMinSamples` | `5` | L2 自动通过的最少样本数（精确特征 + 组先验合计；低于此值一律弹窗） |
 | `autoApproveSensitive` | `false` | 敏感文件也允许 L2 自动通过（默认关：敏感文件永远弹窗，开启后用户自担） |
