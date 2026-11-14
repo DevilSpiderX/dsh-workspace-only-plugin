@@ -43,6 +43,31 @@ export type CommandResult =
     | {readonly kind: "success"; readonly text?: string}
     | {readonly kind: "error"; readonly text: string};
 
+/** LLM 生成选项（字面复刻 `dsh-llm` 的 `GenerateOptions` 最小形状，T39 整理服务用）。 */
+export interface LlmGenerateOptions {
+    readonly provider: string;
+    readonly model: string;
+    readonly reasoningEffort?: string | undefined;
+    readonly system?: string | undefined;
+    readonly messages: ReadonlyArray<{
+        readonly role: string;
+        readonly content: ReadonlyArray<Record<string, unknown>>;
+    }>;
+    readonly signal?: AbortSignal | undefined;
+}
+
+/** LLM 流式块（字面复刻 `dsh-llm` 的 `StreamChunk`，只声明消费到的变体，T39）。 */
+export type LlmStreamChunk =
+    | {readonly type: "text-delta"; readonly index: number; readonly text: string}
+    | {readonly type: "finish"; readonly reason: {readonly kind: string; readonly failure?: unknown}};
+
+/** 默认模型选择（字面复刻 `dsh-agent-default-model` 的 `ModelSelection` 最小形状，T39）。 */
+export interface LlmModelSelection {
+    readonly provider: string;
+    readonly model: string;
+    readonly reasoningEffort?: string | undefined;
+}
+
 declare module "@deepseek-ai/cordis" {
     interface Events {
         /** 转发事件白名单上的 `settings/document-updated`（携带 ask 载荷 / askDone 撤卡）。 */
@@ -72,5 +97,13 @@ declare module "@deepseek-ai/cordis" {
                 readonly handler: (invocation: CommandInvocation) => CommandResult | Promise<CommandResult>;
             }): () => void;
         };
+        /** LLM 运行时（`dsh-llm` 的注入服务，T39 整理服务用；缺包的 composition 可为空）。 */
+        llm?: {
+            stream(options: LlmGenerateOptions): AsyncIterable<LlmStreamChunk>;
+        } | undefined;
+        /** 默认模型选择（`dsh-agent-default-model` 的注入服务，T39 模型路由）。 */
+        agentDefaultModel?: {
+            currentSelection(): LlmModelSelection | undefined;
+        } | undefined;
     }
 }

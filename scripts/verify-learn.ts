@@ -59,7 +59,7 @@ const hit = (over: Partial<LearnHitInput> = {}): LearnHitInput => ({
 
 // --- 闭环：放行到阈值自动豁免；用户拒绝立即回撤；超时只观察不回撤 ---
 {
-    const service = createLearnService(join(dir, "learn.sqlite3"), {enabled: () => true, threshold: () => 3, retentionDays: () => 90});
+    const service = createLearnService(join(dir, "learn.sqlite3"), {enabled: () => true, threshold: () => 3, retentionDays: () => 90, autoApprove: () => true, autoApproveThreshold: () => 0.95, autoApproveMinSamples: () => 5});
     await service.ready;
     service.record([hit()], "once");
     service.record([hit()], "once");
@@ -89,7 +89,7 @@ const hit = (over: Partial<LearnHitInput> = {}): LearnHitInput => ({
 
 // --- 开关关闭：不记账 ---
 {
-    const service = createLearnService(join(dir, "learn-off.sqlite3"), {enabled: () => false, threshold: () => 3, retentionDays: () => 90});
+    const service = createLearnService(join(dir, "learn-off.sqlite3"), {enabled: () => false, threshold: () => 3, retentionDays: () => 90, autoApprove: () => true, autoApproveThreshold: () => 0.95, autoApproveMinSamples: () => 5});
     await service.ready;
     service.record([hit()], "once");
     service.record([hit()], "once");
@@ -100,7 +100,7 @@ const hit = (over: Partial<LearnHitInput> = {}): LearnHitInput => ({
 
 // --- 审批事件（T36）：弹窗即记、不论结果，模糊搜索可查 ---
 {
-    const service = createLearnService(join(dir, "learn-approval.sqlite3"), {enabled: () => true, threshold: () => 3, retentionDays: () => 90});
+    const service = createLearnService(join(dir, "learn-approval.sqlite3"), {enabled: () => true, threshold: () => 3, retentionDays: () => 90, autoApprove: () => true, autoApproveThreshold: () => 0.95, autoApproveMinSamples: () => 5});
     await service.ready;
     const base = {
         at: Date.now(),
@@ -129,12 +129,12 @@ const hit = (over: Partial<LearnHitInput> = {}): LearnHitInput => ({
 // --- Flyway 式迁移（T38）：首次建库、幂等重开、迁移历史 ---
 {
     const dbPath = join(dir, "learn-migrate.sqlite3");
-    const first = createLearnService(dbPath, {enabled: () => true, threshold: () => 3, retentionDays: () => 90});
+    const first = createLearnService(dbPath, {enabled: () => true, threshold: () => 3, retentionDays: () => 90, autoApprove: () => true, autoApproveThreshold: () => 0.95, autoApproveMinSamples: () => 5});
     await first.ready;
     check("migrations applied on first open", first.db.available === true);
     first.db.recordHit({...hit(), at: Date.now(), verdict: "once"});
     first.close();
-    const second = createLearnService(dbPath, {enabled: () => true, threshold: () => 3, retentionDays: () => 90});
+    const second = createLearnService(dbPath, {enabled: () => true, threshold: () => 3, retentionDays: () => 90, autoApprove: () => true, autoApproveThreshold: () => 0.95, autoApproveMinSamples: () => 5});
     await second.ready;
     check("reopen is idempotent and keeps data", second.db.available && second.db.search("awk", 5).length === 1, JSON.stringify(second.db.search("awk", 5).map((row) => row.token)));
     second.close();
@@ -142,12 +142,12 @@ const hit = (over: Partial<LearnHitInput> = {}): LearnHitInput => ({
     await migrator.connect();
     const status = await migrator.status();
     await migrator.disconnect();
-    check("migration history recorded in _migrations", status.length === 2 && status[0].executed === true && status[0].name === "0001_init" && status[1].executed === true && status[1].name === "0002_add_command_name", JSON.stringify(status));
+    check("migration history recorded in _migrations", status.length === 3 && status[0].executed === true && status[0].name === "0001_init" && status[1].executed === true && status[1].name === "0002_add_command_name" && status[2].executed === true && status[2].name === "0003_learn_policies", JSON.stringify(status));
 }
 
 // --- 五段签名：新旧异键隔离 + 方向锁（abs-path/硬路径不可学）+ 逐签名归纳 ---
 {
-    const service = createLearnService(join(dir, "learn-sig5.sqlite3"), {enabled: () => true, threshold: () => 2, retentionDays: () => 90});
+    const service = createLearnService(join(dir, "learn-sig5.sqlite3"), {enabled: () => true, threshold: () => 2, retentionDays: () => 90, autoApprove: () => true, autoApproveThreshold: () => 0.95, autoApproveMinSamples: () => 5});
     await service.ready;
     // 升级前的存量四段行（哪怕已豁免）与新五段键天然异键、精确匹配永不命中。
     service.db.writeFeature({shape: "bash|pattern-arg|regex-literal|single", allowCount: 3, denyCount: 0, timeoutCount: 0, exempt: true, updatedAt: Date.now()});
@@ -187,12 +187,70 @@ const hit = (over: Partial<LearnHitInput> = {}): LearnHitInput => ({
 {
     const badPath = join(dir, "corrupt.sqlite3");
     writeFileSync(badPath, "this is not a sqlite database", "utf8");
-    const service = createLearnService(badPath, {enabled: () => true, threshold: () => 3, retentionDays: () => 90});
+    const service = createLearnService(badPath, {enabled: () => true, threshold: () => 3, retentionDays: () => 90, autoApprove: () => true, autoApproveThreshold: () => 0.95, autoApproveMinSamples: () => 5});
     await service.ready;
     check("corrupt db => unavailable stub", service.db.available === false);
     service.record([hit()], "once");
     check("unavailable stub swallows writes", service.features().length === 0 && !service.isExempt("bash|awk|pattern-arg|regex-literal|single"));
     check("unavailable search empty", service.search("awk").length === 0);
+    service.close();
+}
+
+// --- L2 意图学习（T39）：分层计数 / 自动通过三条件 / 回撤 / auto-approved 不训练 ---
+{
+    const service = createLearnService(join(dir, "learn-l2.sqlite3"), {enabled: () => true, threshold: () => 2, retentionDays: () => 90, autoApprove: () => true, autoApproveThreshold: () => 0.95, autoApproveMinSamples: () => 5});
+    await service.ready;
+    const input = {tool: "pwsh", commandName: "docker", dir: "D:\\proj"};
+    // auto-approved 不回流训练（防自我强化）：L1/L2 都不吃自己的产出。
+    service.record([hit()], "auto-approved");
+    check("auto-approved never trains L1", service.features().length === 0);
+    service.recordPolicy(input, "auto-approved");
+    check("auto-approved never trains L2", service.db.policies().length === 0);
+    // other-deny（timeout 等）只观察、不进样本（超时噪声不污染学习）。
+    service.recordPolicy(input, "timeout");
+    check("timeout is not a training sample", service.db.policies().length === 0);
+    // 正样本计数：K1-K4 四层键逐层 upsert。
+    for (let i = 0; i < 20; i += 1) service.recordPolicy(input, "once");
+    const rows = service.db.policies();
+    check("four layers counted per verdict", rows.length === 4 && rows.every((row) => row.allowCount === 20 && row.sampleCount === 20 && row.denyCount === 0 && row.active === true), JSON.stringify(rows));
+    check("auto-approve ready at threshold", service.shouldAutoApprove(input) === true);
+    // 样本不足的新特征不自动通过（fail-closed 回弹窗）。
+    check("fresh feature does not auto-approve", service.shouldAutoApprove({tool: "pwsh", commandName: "curl", dir: "D:\\proj"}) === false);
+    // 用户拒绝立即回撤：deny 计数 + active=false，K1 永久否决。
+    service.recordPolicy(input, "user-denied");
+    check("user deny revokes auto-approve", service.shouldAutoApprove(input) === false);
+    const k1 = service.db.policies().find((row) => row.featureKey === "pwsh|docker|D:\\proj");
+    check("deny counted and revoked", k1 !== void 0 && k1.denyCount === 1 && k1.active === false, JSON.stringify(k1));
+    // 组规则 deny 传染：LLM 归并的组被拒过 → 整组不自动通过。
+    service.db.writeGroupRule({id: "g1", matcher: {tool: "pwsh", command: "docker*", dir: ""}, sampleCount: 20, allowCount: 19, denyCount: 1, active: true, updatedAt: Date.now()});
+    service.reload();
+    check("group deny contagion blocks auto-approve", service.shouldAutoApprove({tool: "pwsh", commandName: "docker", dir: "E:\\other"}) === false);
+    // 重置：全部学习表清空、重新开始学习。
+    check("resetLearnData clears everything", service.resetLearnData() === true && service.db.policies().length === 0 && service.features().length === 0 && service.db.groupRules().length === 0);
+    service.close();
+}
+
+// --- T40 自动审批总闸：关闸停免弹窗但学习照常，开闸存量立即生效 ---
+{
+    let autoApproveOn = false;
+    const service = createLearnService(join(dir, "learn-t40.sqlite3"), {enabled: () => true, threshold: () => 2, retentionDays: () => 90, autoApprove: () => autoApproveOn, autoApproveThreshold: () => 0.95, autoApproveMinSamples: () => 5});
+    await service.ready;
+    const input = {tool: "pwsh", commandName: "make", dir: "D:\\proj"};
+    const l1hit = () => hit({shapeSig: "pwsh|make|arg|soft-path|none", shape: "soft-path", token: "foo\\bar", commandName: "make"});
+    // 关闸期间照常学习：L1 归纳与 L2 计数都继续积累（"关了自动审批还是要继续学习"）。
+    for (let i = 0; i < 20; i += 1) {
+        service.record([l1hit()], "once");
+        service.recordPolicy(input, "once");
+    }
+    check("gate-off keeps learning L1", service.features().length === 1 && service.features()[0]?.allowCount === 20);
+    check("gate-off keeps learning L2", service.db.policies().length === 4 && service.db.policies().every((row) => row.allowCount === 20 && row.sampleCount === 20));
+    // 关闸：L1 形态豁免与 L2 意图自动通过一律不作用（每次照常弹窗）。
+    check("gate-off blocks L1 exemption", service.isExempt("pwsh|make|arg|soft-path|none") === false);
+    check("gate-off blocks L2 auto-approve", service.shouldAutoApprove(input) === false);
+    // 开闸：积累的数据立即生效（豁免与自动通过同步恢复）。
+    autoApproveOn = true;
+    check("gate-on restores L1 exemption", service.isExempt("pwsh|make|arg|soft-path|none") === true);
+    check("gate-on restores L2 auto-approve", service.shouldAutoApprove(input) === true);
     service.close();
 }
 

@@ -70,6 +70,13 @@
     display: flex;
 }
 
+/* T39-fix：学习面板内联错误（写回失败/模型目录失败），比顶部描述区更显眼。 */
+.learnError {
+    color: #d33333;
+    font-size: 12px;
+    margin: 4px 0;
+}
+
 .badge {
     border-radius: var(--dsw-radius-sm);
     background: var(--dsw-alias-bg-module-platform);

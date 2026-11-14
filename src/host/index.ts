@@ -18,7 +18,8 @@ import {
     toolAccessKind
 } from "./scanner.ts";
 import type {PathEntry, SensitiveConfig, SensitiveHit} from "./scanner.ts";
-import {createLearnService, isLearnable} from "./learn.ts";
+import {createLearnService, isLearnable, type PolicyInput} from "./learn.ts";
+import {createLlmTidyService} from "./llm-tidy.ts";
 import type {LearnHitInput} from "./learn.ts";
 import {initSyntaxParsers} from "./shell-syntax.ts";
 import {ensureScopePersisted, rootSessionIdOf, SCOPE, sessionScope, setSessionScope} from "./session-state.ts";
@@ -48,7 +49,7 @@ import type {Session} from "@deepseek-ai/dsh-session";
  *
  * 配置放在插件的 DSH 0.2 Config（持久化在活动 profile 的 `cordis.patch.yml`）里，
  * 取代已废弃的 0.1 设置通道及其 apiproxy 白名单 patch。运行时写入的字段
- * （`enabled`、`always`）是 `.volatile()` 的，设置表单与本插件共享同一实时引用，
+ * （`enabled`、`always` 及学习/LLM 字段）是 `.volatile()` 的，设置表单与本插件共享同一实时引用，
  * 经设置服务写回。
  *
  * 工作区外的写还要额外受 `workspace-write` 模式会话的内核围栏约束（此时工具的
@@ -128,7 +129,19 @@ export const Config = z.object({
     /** 学习层自动豁免的放行阈值（且用户拒绝必须为 0；deny 即回撤）。 */
     learnThreshold: z.number().step(1).min(2).default(3),
     /** 学习事件（learn.sqlite3 的 hit_events）保留天数，定期压实。 */
-    learnRetentionDays: z.number().step(1).min(1).default(90)
+    learnRetentionDays: z.number().step(1).min(1).default(90),
+    // T39 L2：审批意图自动通过（从既有判决归纳特征分层统计，置信达标自动放行）。
+    // T40：扩义为「学习结果自动审批」总闸——false 时 L1 形态豁免与 L2 自动通过
+    // 一律不作用（每次照常弹窗），但学习（记账/归纳/LLM 整理）照常继续。
+    autoApproveFromHistory: z.boolean().default(true).volatile(),
+    autoApproveThreshold: z.number().min(0.5).max(1).step(0.01).default(0.95).volatile(),
+    autoApproveMinSamples: z.number().step(1).min(1).default(5).volatile(),
+    // 敏感目标默认永不自动通过；置 true 由用户自担（敏感面仍过 deny 规则）。
+    autoApproveSensitive: z.boolean().default(false).volatile(),
+    // T39 LLM 整理：可开关；模型 "auto" = 跟随用户当前模型，或 "provider::model" 显式指定。
+    llmAssist: z.boolean().default(true).volatile(),
+    llmModel: z.string().default("auto").volatile(),
+    llmReasoningEffort: z.string().default("default").volatile()
 });
 
 /**
@@ -152,6 +165,13 @@ export interface PluginConfigInput {
     readonly learnFromDecisions?: unknown;
     readonly learnThreshold?: unknown;
     readonly learnRetentionDays?: unknown;
+    readonly autoApproveFromHistory?: unknown;
+    readonly autoApproveThreshold?: unknown;
+    readonly autoApproveMinSamples?: unknown;
+    readonly autoApproveSensitive?: unknown;
+    readonly llmAssist?: unknown;
+    readonly llmModel?: unknown;
+    readonly llmReasoningEffort?: unknown;
 }
 
 /** 读取 `.volatile()` 引用（或已是普通值的值）。 */
@@ -587,9 +607,74 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
         retentionDays: () => {
             const value = readVolatile(config.learnRetentionDays);
             return typeof value === "number" ? value : 90;
+        },
+        // T39 L2：审批意图自动通过（`decidesAutoApprove` 的三条件见 learn.ts）。
+        autoApprove: () => readVolatile(config.autoApproveFromHistory) === true,
+        autoApproveThreshold: () => {
+            const value = readVolatile(config.autoApproveThreshold);
+            return typeof value === "number" && Number.isFinite(value) ? value : 0.95;
+        },
+        autoApproveMinSamples: () => {
+            const value = readVolatile(config.autoApproveMinSamples);
+            return typeof value === "number" && Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : 5;
         }
     });
     ctx.effect(() => () => learnService.close(), "workspace-only: learn db");
+
+    // T39：LLM 自动整理学习数据（llm-tidy.ts）。异步、失败不阻塞门禁；
+    // 产物只落 llm_group_rules 的组 matcher（LLM 只整理不裁决，计数全部
+    // 服务端实算）。模型 "auto" 跟随 `agentDefaultModel.currentSelection()`。
+    const tidyService = createLlmTidyService({
+        db: learnService.db,
+        askModel: async (model, system, user, signal) => {
+            const llm = ctx.llm;
+            if (llm === void 0) throw new Error("llm unavailable");
+            const text: string[] = [];
+            for await (const chunk of llm.stream({
+                provider: model.provider,
+                model: model.model,
+                // effort id 在宿主侧是 branded `ReasoningEffortId`（brand.ts 的
+                // 字符串品牌包装）；这里双断言交回宿主品牌，不引入 dsh-llm 依赖。
+                reasoningEffort: model.reasoningEffortId as unknown as Parameters<typeof llm.stream>[0]["reasoningEffort"],
+                system,
+                messages: [{role: "user", content: [{type: "text", text: user}]}],
+                signal
+            })) {
+                if (chunk.type === "text-delta") text.push(chunk.text);
+                else if (chunk.type === "finish" && chunk.reason.kind !== "stop" && chunk.reason.kind !== "max-tokens") {
+                    // error/aborted 规范化为 terminal finish（不抛）——这里转成
+                    // 失败交给上层记审计；max-tokens 截断交给 JSON 解析自然判废。
+                    throw new Error(`llm finish: ${chunk.reason.kind}`);
+                }
+            }
+            return text.join("");
+        },
+        resolveDefaultModel: () => {
+            const selection = ctx.agentDefaultModel?.currentSelection();
+            if (selection === void 0 || typeof selection.model !== "string") return void 0;
+            return {
+                provider: typeof selection.provider === "string" ? selection.provider : "",
+                model: selection.model,
+                reasoningEffortId: typeof selection.reasoningEffort === "string" ? selection.reasoningEffort : void 0
+            };
+        },
+        onApplied: () => learnService.reload()
+    }, {
+        assist: () => readVolatile(config.llmAssist) !== false,
+        model: () => {
+            const value = readVolatile(config.llmModel);
+            return typeof value === "string" && value.length > 0 ? value : "auto";
+        },
+        reasoningEffort: () => {
+            const value = readVolatile(config.llmReasoningEffort);
+            return typeof value === "string" && value.length > 0 ? value : "default";
+        }
+    });
+    // 防抖触发（每 tick 只检查不真跑；新审批事件 ≥20 条或距上次 ≥24h 才跑，
+    // 见 llm-tidy.ts 的 TIDY_* 常量）。手动「立即整理」走 Remote runLlmTidy。
+    const tidyTimer = setInterval(() => tidyService.tick(), 3_600_000);
+    tidyTimer.unref();
+    ctx.effect(() => () => clearInterval(tidyTimer), "workspace-only: llm tidy");
 
     // 语法层预热（T35）：tree-sitter wasm 异步加载，就绪前扫描自动走词法
     // 回落；失败永久回落（保守方向），这里只负责尽早热身。
@@ -695,10 +780,65 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
             if (list === void 0) groups.set(entry.path, [entry]);
             else list.push(entry);
         }
+        // T39 L2 辅助：目标的命令名取 shapeSig 第 2 段（与 hit 记账同口径；
+        // 无 shapeSig 的条目组回退空串=K3/K4 层）。
+        const commandNameOfGroup = (group: Array<PathEntry & Partial<SensitiveHit>>): string =>
+            group.map((entry) => (entry.shapeSig ?? "").split("|")[1] ?? "").find((name) => name !== "") ?? "";
+        const hitsOf = (group: Array<PathEntry & Partial<SensitiveHit>>): LearnHitInput[] => group
+            .filter((entry) => entry.shapeSig !== void 0)
+            .map((entry) => {
+                const parts = (entry.shapeSig ?? "").split("|");
+                return {
+                    tool: exec.name,
+                    command: typeof args.command === "string" ? args.command : "",
+                    token: entry.path,
+                    shapeSig: entry.shapeSig ?? "",
+                    commandName: parts[1] ?? "",
+                    role: parts[2] ?? "",
+                    shape: parts[3] === void 0 || parts[3] === "plain" ? null : parts[3],
+                    hitReason: entry.outside === true ? "outside" : "sensitive",
+                    isFocus: true,
+                    sessionId: session?.id ?? ""
+                };
+            });
         for (const [path, group] of groups) {
             const entrySensitive = group.some((entry) => entry.pattern !== void 0);
             const entryReason = group[0]?.reason ?? reason;
             const patterns = [...new Set(group.flatMap((entry) => entry.pattern !== void 0 ? [entry.pattern] : []))];
+            // T39 L2：审批意图自动通过（deny 规则更早已拒、白名单语义不进此层）。
+            // 敏感目标默认永不自动通过（autoApproveSensitive=true 由用户自担）。
+            // fail-closed：开关关/db 不可用/置信不足 → 照旧弹窗，门禁正确性
+            // 从不依赖本层。
+            const policyInput: PolicyInput = {
+                tool: exec.name,
+                commandName: commandNameOfGroup(group),
+                dir: directoryOf(path)
+            };
+            const sensitivePass = !entrySensitive || readVolatile(config.autoApproveSensitive) === true;
+            if (sensitivePass && learnService.shouldAutoApprove(policyInput)) {
+                try {
+                    // 审计照记（hit_events 事件 + approval_events verdict=
+                    // 'auto-approved'），但绝不进训练样本（防自我强化；
+                    // learnService 内部双拦）。
+                    learnService.record(hitsOf(group), "auto-approved");
+                    learnService.recordApproval({
+                        at: gateStartedAt,
+                        tool: exec.name,
+                        command: typeof args.command === "string" ? args.command : "",
+                        dir: directoryOf(path),
+                        reason: entryReason,
+                        targets: JSON.stringify([path]),
+                        sensitive: entrySensitive,
+                        verdict: "auto-approved",
+                        channel: "auto",
+                        ms: Date.now() - gateStartedAt,
+                        sessionId: session?.id ?? ""
+                    });
+                } catch (error) {
+                    console.warn("[workspace-only] learn record failed (gate unaffected)", error);
+                }
+                continue;
+            }
             noteRecent(directoryOf(path), exec.name);
             const verdict = await askFlow.askOutside({
                 ctx,
@@ -723,24 +863,10 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
             if (verdict.channel !== CHANNEL.alwaysBatch) {
                 try {
                     const verdictKey = verdict.choice === CHOICE.deny ? verdict.denyCause ?? "user-denied" : verdict.choice;
-                    const hits: LearnHitInput[] = group
-                        .filter((entry) => entry.shapeSig !== void 0)
-                        .map((entry) => {
-                            const parts = (entry.shapeSig ?? "").split("|");
-                            return {
-                                tool: exec.name,
-                                command: typeof args.command === "string" ? args.command : "",
-                                token: entry.path,
-                                shapeSig: entry.shapeSig ?? "",
-                                commandName: parts[1] ?? "",
-                                role: parts[2] ?? "",
-                                shape: parts[3] === void 0 || parts[3] === "plain" ? null : parts[3],
-                                hitReason: entry.outside === true ? "outside" : "sensitive",
-                                isFocus: true,
-                                sessionId: session?.id ?? ""
-                            };
-                        });
-                    learnService.record(hits, verdictKey);
+                    learnService.record(hitsOf(group), verdictKey);
+                    // T39 L2 记账：审批意图分层统计（auto-approved 与超时类
+                    // 不进样本、user-deny 即回撤，见 learn.ts 的 recordPolicy）。
+                    learnService.recordPolicy(policyInput, verdictKey);
                     learnService.recordApproval({
                         at: gateStartedAt,
                         tool: exec.name,
@@ -829,6 +955,15 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
         }),
         searchApprovals: (query, limit) => ({
             events: learnService.db.searchApprovals(String(query), typeof limit === "number" && Number.isFinite(limit) ? limit : 50)
+        }),
+        // T39：设置页「重置学习数据」——清空六表重新开始学习。
+        resetLearnData: () => ({reset: learnService.resetLearnData()}),
+        learnedPolicies: () => ({policies: learnService.db.policies()}),
+        removeLearnedPolicy: (featureKey) => ({removed: learnService.removePolicy(String(featureKey))}),
+        // T39：设置页「立即整理」——异步跑一轮 LLM 整理并返回摘要。
+        runLlmTidy: () => tidyService.run(),
+        llmTidyRuns: (limit) => ({
+            runs: learnService.db.tidyRuns(typeof limit === "number" && Number.isFinite(limit) ? Math.max(1, Math.trunc(limit)) : 20)
         }),
         clearRecent() {
             recentAsks.length = 0;

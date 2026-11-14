@@ -61,7 +61,12 @@ export const REMOTE_WIRES = Object.freeze({
     learnedFeatures: Object.freeze([]),
     removeLearnedFeature: Object.freeze(["shape"]),
     searchLearned: Object.freeze(["query", "limit"]),
-    searchApprovals: Object.freeze(["query", "limit"])
+    searchApprovals: Object.freeze(["query", "limit"]),
+    resetLearnData: Object.freeze([]),
+    learnedPolicies: Object.freeze([]),
+    removeLearnedPolicy: Object.freeze(["featureKey"]),
+    runLlmTidy: Object.freeze([]),
+    llmTidyRuns: Object.freeze(["limit"])
 } as const);
 
 /** 暴露给 `ctx.remote.workspaceOnly.*` / `workspaceOnly/*` RPC 的 Remote 方法名。 */
@@ -102,6 +107,16 @@ export interface WorkspaceOnlyHooks {
     searchLearned(query: string, limit: number): unknown;
     /** 模糊搜索审批事件（T36：弹窗即记、不论结果；工具/命令/目录/原因/判决）。 */
     searchApprovals(query: string, limit: number): unknown;
+    /** T39：重置全部学习数据（六表清空、重新开始学习；设置页按钮）。 */
+    resetLearnData(): unknown;
+    /** T39：审批意图策略列表（分层特征键 × 计数 × active），供管理面展示。 */
+    learnedPolicies(): unknown;
+    /** T39：移除一条审批意图策略（撤销；该特征重新弹窗）。 */
+    removeLearnedPolicy(featureKey: string): unknown;
+    /** T39：立即跑一轮 LLM 自动整理（异步执行，返回运行摘要）。 */
+    runLlmTidy(): unknown;
+    /** T39：LLM 整理运行审计（最近 limit 条，新的在前）。 */
+    llmTidyRuns(limit: number): unknown;
 }
 
 /** `bindTypertRemote` 产出的冻结 binding（形状按 `dsh-typert-protocol` 字面复刻）。 */
@@ -199,6 +214,26 @@ const WorkspaceOnlyRemoteService = class extends Service {
 
     async searchApprovals(query: string, limit: number): Promise<unknown> {
         return this.hooks.searchApprovals(query, limit);
+    }
+
+    async resetLearnData(): Promise<unknown> {
+        return this.hooks.resetLearnData();
+    }
+
+    async learnedPolicies(): Promise<unknown> {
+        return this.hooks.learnedPolicies();
+    }
+
+    async removeLearnedPolicy(featureKey: string): Promise<unknown> {
+        return this.hooks.removeLearnedPolicy(featureKey);
+    }
+
+    async runLlmTidy(): Promise<unknown> {
+        return this.hooks.runLlmTidy();
+    }
+
+    async llmTidyRuns(limit: number): Promise<unknown> {
+        return this.hooks.llmTidyRuns(limit);
     }
 };
 

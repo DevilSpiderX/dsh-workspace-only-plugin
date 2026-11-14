@@ -85,6 +85,64 @@ export interface ApprovalEvent {
     readonly sessionId: string;
 }
 
+/**
+ * 审批意图策略行（T39 L2）：分层特征键（`K1=tool|commandName|dir` …
+ * `K4=tool`）的判决统计。自动通过判定见 `learn.ts` `decidesAutoApprove`
+ * ——`deny_count>0` 是一票否决，`active=false` 即回撤。
+ */
+export interface LearnedPolicy {
+    /** 主键：uuidv7（时间有序）。 */
+    readonly id: string;
+    /** 分层特征键（`\` 分隔的层键，见 `learn.ts` `policyFeatureKeys`）。 */
+    readonly featureKey: string;
+    /** 层号 1-4（K1-K4）。 */
+    readonly layer: number;
+    readonly tool: string;
+    readonly commandName: string;
+    readonly dir: string;
+    readonly sampleCount: number;
+    readonly allowCount: number;
+    readonly denyCount: number;
+    /** 是否仍可参与自动通过判定（用户拒绝即回撤为 false）。 */
+    readonly active: boolean;
+    /** `stat`（统计归纳）/ `llm`（LLM 整理产物）。 */
+    readonly source: string;
+    readonly updatedAt: number;
+}
+
+/**
+ * LLM 归并组的匹配器（T39）：glob 风格（`*` 通配、`?` 单字符，无正则——
+ * 避免 ReDoS 与意外宽匹配）；空串=该维度不限。
+ */
+export interface GroupMatcher {
+    readonly tool: string;
+    readonly command: string;
+    readonly dir: string;
+}
+
+/** LLM 归并组规则行（T39）：语义等价特征的聚合证据与 deny 传染源。 */
+export interface LlmGroupRule {
+    readonly id: string;
+    readonly matcher: GroupMatcher;
+    readonly sampleCount: number;
+    readonly allowCount: number;
+    readonly denyCount: number;
+    readonly active: boolean;
+    readonly updatedAt: number;
+}
+
+/** LLM 整理运行审计行（T39）：每次整理一行，成败与产物俱全。 */
+export interface LlmTidyRun {
+    readonly id: string;
+    readonly createdAt: number;
+    readonly model: string;
+    readonly promptDigest: string;
+    readonly outputJson: string;
+    /** `ok` / `failed`。 */
+    readonly status: string;
+    readonly appliedCount: number;
+}
+
 /** 事件表（Drizzle schema，列名与 DDL 一一对应；id 主键 = uuidv7）。 */
 const hitEvents = sqliteTable("hit_events", {
     id: text("id").primaryKey(),
@@ -129,6 +187,44 @@ const approvalEvents = sqliteTable("approval_events", {
     sessionId: text("session_id")
 });
 
+/** 审批意图策略表（T39 L2，Drizzle schema；feature_key 是 upsert 业务唯一键）。 */
+const learnedPolicies = sqliteTable("learned_policies", {
+    id: text("id").primaryKey(),
+    featureKey: text("feature_key").notNull().unique(),
+    layer: integer("layer").notNull(),
+    tool: text("tool").notNull(),
+    commandName: text("command_name").notNull().default(""),
+    dir: text("dir").notNull().default(""),
+    sampleCount: integer("sample_count").notNull().default(0),
+    allowCount: integer("allow_count").notNull().default(0),
+    denyCount: integer("deny_count").notNull().default(0),
+    active: integer("active").notNull().default(1),
+    source: text("source").notNull().default("stat"),
+    updatedAt: integer("updated_at").notNull()
+});
+
+/** LLM 归并组规则表（T39，Drizzle schema；matcher 存 JSON 文本）。 */
+const llmGroupRules = sqliteTable("llm_group_rules", {
+    id: text("id").primaryKey(),
+    matcher: text("matcher").notNull(),
+    sampleCount: integer("sample_count").notNull().default(0),
+    allowCount: integer("allow_count").notNull().default(0),
+    denyCount: integer("deny_count").notNull().default(0),
+    active: integer("active").notNull().default(1),
+    updatedAt: integer("updated_at").notNull()
+});
+
+/** LLM 整理审计表（T39，Drizzle schema）。 */
+const llmTidyRuns = sqliteTable("llm_tidy_runs", {
+    id: text("id").primaryKey(),
+    createdAt: integer("created_at").notNull(),
+    model: text("model").notNull(),
+    promptDigest: text("prompt_digest"),
+    outputJson: text("output_json"),
+    status: text("status").notNull(),
+    appliedCount: integer("applied_count").notNull().default(0)
+});
+
 /** 存储面（`learn.ts` 消费；不可用 stub 与真实现同形）。id 由存储层生成（uuidv7）。 */
 export interface LearnDb {
     readonly available: boolean;
@@ -142,6 +238,21 @@ export interface LearnDb {
     search(query: string, limit: number): HitEvent[];
     /** 审批事件的模糊搜索（工具/命令/目录/原因）。 */
     searchApprovals(query: string, limit: number): ApprovalEvent[];
+    /** 审批意图策略（T39 L2）：全部行。 */
+    policies(): LearnedPolicy[];
+    /** 策略写回（upsert，feature_key 是业务唯一键）。 */
+    writePolicy(policy: LearnedPolicy): void;
+    removePolicy(featureKey: string): boolean;
+    /** LLM 归并组规则（T39）：全部行（matcher JSON 损坏的行跳过）。 */
+    groupRules(): LlmGroupRule[];
+    writeGroupRule(rule: LlmGroupRule): void;
+    removeGroupRule(id: string): boolean;
+    /** LLM 整理审计（T39）：追加一行。 */
+    recordTidyRun(run: Omit<LlmTidyRun, "id">): void;
+    /** LLM 整理审计：最近 `limit` 行（新→旧）。 */
+    tidyRuns(limit: number): LlmTidyRun[];
+    /** 重置全部学习数据（T39 设置页按钮）：清空六张学习表。 */
+    resetAll(): void;
     /** 事件保留期压实（`at` 早于 `olderThanMs` 的行删除）。 */
     prune(olderThanMs: number): void;
     close(): void;
@@ -160,6 +271,19 @@ export const UNAVAILABLE: LearnDb = {
     removeFeature: () => false,
     search: () => [],
     searchApprovals: () => [],
+    policies: () => [],
+    writePolicy: () => {
+    },
+    removePolicy: () => false,
+    groupRules: () => [],
+    writeGroupRule: () => {
+    },
+    removeGroupRule: () => false,
+    recordTidyRun: () => {
+    },
+    tidyRuns: () => [],
+    resetAll: () => {
+    },
     prune: () => {
     },
     close: () => {
@@ -368,6 +492,151 @@ export async function openLearnDb(path: string): Promise<LearnDb> {
                 return [];
             }
         },
+        policies() {
+            try {
+                return db.select().from(learnedPolicies).all().map((row) => ({
+                    id: String(row.id),
+                    featureKey: row.featureKey,
+                    layer: row.layer,
+                    tool: row.tool,
+                    commandName: row.commandName ?? "",
+                    dir: row.dir ?? "",
+                    sampleCount: row.sampleCount,
+                    allowCount: row.allowCount,
+                    denyCount: row.denyCount,
+                    active: row.active === 1,
+                    source: row.source ?? "stat",
+                    updatedAt: row.updatedAt
+                }));
+            } catch {
+                return [];
+            }
+        },
+        writePolicy(policy) {
+            try {
+                const values = {
+                    featureKey: policy.featureKey,
+                    layer: policy.layer,
+                    tool: policy.tool,
+                    commandName: policy.commandName.slice(0, 256),
+                    dir: policy.dir.slice(0, 1024),
+                    sampleCount: policy.sampleCount,
+                    allowCount: policy.allowCount,
+                    denyCount: policy.denyCount,
+                    active: policy.active ? 1 : 0,
+                    source: policy.source,
+                    updatedAt: policy.updatedAt
+                };
+                db.insert(learnedPolicies).values({id: uuidv7(), ...values})
+                    .onConflictDoUpdate({target: learnedPolicies.featureKey, set: values})
+                    .run();
+            } catch {
+                // 写回失败下轮重新归纳。
+            }
+        },
+        removePolicy(featureKey) {
+            try {
+                const existing = db.select().from(learnedPolicies).where(eq(learnedPolicies.featureKey, featureKey)).get();
+                db.delete(learnedPolicies).where(eq(learnedPolicies.featureKey, featureKey)).run();
+                return existing !== void 0;
+            } catch {
+                return false;
+            }
+        },
+        groupRules() {
+            try {
+                const rules: LlmGroupRule[] = [];
+                for (const row of db.select().from(llmGroupRules).all()) {
+                    const matcher = parseMatcher(row.matcher);
+                    // matcher JSON 损坏的行跳过（fail-safe：坏规则不参与判定）。
+                    if (matcher === void 0) continue;
+                    rules.push({
+                        id: String(row.id),
+                        matcher,
+                        sampleCount: row.sampleCount,
+                        allowCount: row.allowCount,
+                        denyCount: row.denyCount,
+                        active: row.active === 1,
+                        updatedAt: row.updatedAt
+                    });
+                }
+                return rules;
+            } catch {
+                return [];
+            }
+        },
+        writeGroupRule(rule) {
+            try {
+                const values = {
+                    matcher: JSON.stringify(rule.matcher),
+                    sampleCount: rule.sampleCount,
+                    allowCount: rule.allowCount,
+                    denyCount: rule.denyCount,
+                    active: rule.active ? 1 : 0,
+                    updatedAt: rule.updatedAt
+                };
+                db.insert(llmGroupRules).values({id: rule.id, ...values})
+                    .onConflictDoUpdate({target: llmGroupRules.id, set: values})
+                    .run();
+            } catch {
+                // 写回失败下轮整理重试。
+            }
+        },
+        removeGroupRule(id) {
+            try {
+                const existing = db.select().from(llmGroupRules).where(eq(llmGroupRules.id, id)).get();
+                db.delete(llmGroupRules).where(eq(llmGroupRules.id, id)).run();
+                return existing !== void 0;
+            } catch {
+                return false;
+            }
+        },
+        recordTidyRun(run) {
+            try {
+                db.insert(llmTidyRuns).values({
+                    id: uuidv7(),
+                    createdAt: run.createdAt,
+                    model: run.model.slice(0, 256),
+                    promptDigest: run.promptDigest.slice(0, 512),
+                    outputJson: run.outputJson.slice(0, 65_536),
+                    status: run.status,
+                    appliedCount: run.appliedCount
+                }).run();
+            } catch {
+                // 审计单行写失败不阻塞整理。
+            }
+        },
+        tidyRuns(limit) {
+            try {
+                return db.select().from(llmTidyRuns)
+                    .orderBy(desc(llmTidyRuns.createdAt))
+                    .limit(Math.max(1, Math.min(limit, 200)))
+                    .all()
+                    .map((row) => ({
+                        id: String(row.id),
+                        createdAt: row.createdAt,
+                        model: row.model,
+                        promptDigest: row.promptDigest ?? "",
+                        outputJson: row.outputJson ?? "",
+                        status: row.status,
+                        appliedCount: row.appliedCount
+                    }));
+            } catch {
+                return [];
+            }
+        },
+        resetAll() {
+            try {
+                db.delete(hitEvents).run();
+                db.delete(learnedExemptions).run();
+                db.delete(learnedPolicies).run();
+                db.delete(llmGroupRules).run();
+                db.delete(llmTidyRuns).run();
+                db.delete(approvalEvents).run();
+            } catch {
+                // 清空失败：设置页重试即可，绝不半清半用。
+            }
+        },
         prune(olderThanMs) {
             try {
                 db.delete(hitEvents).where(lt(hitEvents.at, olderThanMs)).run();
@@ -390,3 +659,18 @@ export async function openLearnDb(path: string): Promise<LearnDb> {
 const likeToken = (pattern: string) => like(hitEvents.token, pattern);
 const likeCommand = (pattern: string) => like(hitEvents.command, pattern);
 const likeShape = (pattern: string) => like(hitEvents.shapeSig, pattern);
+
+/** matcher JSON 解析（损坏/畸形返回 undefined=跳过该规则，fail-safe）。 */
+function parseMatcher(raw: string): GroupMatcher | undefined {
+    try {
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        if (typeof parsed !== "object" || parsed === null) return void 0;
+        return {
+            tool: typeof parsed.tool === "string" ? parsed.tool : "",
+            command: typeof parsed.command === "string" ? parsed.command : "",
+            dir: typeof parsed.dir === "string" ? parsed.dir : ""
+        };
+    } catch {
+        return void 0;
+    }
+}
