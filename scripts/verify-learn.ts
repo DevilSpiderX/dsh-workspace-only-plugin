@@ -5,7 +5,7 @@
  *
  *   node scripts/verify-learn.ts
  */
-import {mkdtempSync, writeFileSync} from "node:fs";
+import {mkdtempSync, readFileSync, writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {fileURLToPath} from "node:url";
@@ -252,6 +252,20 @@ const hit = (over: Partial<LearnHitInput> = {}): LearnHitInput => ({
     check("gate-on restores L1 exemption", service.isExempt("pwsh|make|arg|soft-path|none") === true);
     check("gate-on restores L2 auto-approve", service.shouldAutoApprove(input) === true);
     service.close();
+}
+
+// --- T42 源码文本看守：可选服务（llm / agentDefaultModel）必须经 ctx.get() 取 ---
+{
+    // cordis 的 proxy get trap 对未 inject 的属性**直接抛** `cannot get property
+    // "X" without inject`（不是 undefined，可选链挡不住），而 inject 里加可选服务
+    // 会让缺服务的 composition 整个插件不激活（fail-open）。所以这两处只允许走
+    // `ctx.get(...)`（ReflectService，不经 get trap）。这条看守钉住装配层不退化。
+    const source = readFileSync(fileURLToPath(new URL("../src/host/index.ts", import.meta.url)), "utf8");
+    const directAccess = /ctx\s*(?:\?\.)?\.\s*(?:llm|agentDefaultModel)\b/.exec(source);
+    check("index.ts 无 ctx.llm / ctx.agentDefaultModel 直访问（T42）", directAccess === null, directAccess?.[0]);
+    const bridge = readFileSync(fileURLToPath(new URL("../src/host/llm-bridge.ts", import.meta.url)), "utf8");
+    check("llm-bridge 经 services.get 取可选服务", /services\??\.get\(/.test(bridge) && /"(?:llm|agentDefaultModel)"/.test(bridge));
+    check("llm-bridge 不直访问 ctx 属性", /ctx\s*(?:\?\.)?\.\s*(?:llm|agentDefaultModel)\b/.test(bridge) === false);
 }
 
 console.log(`${pass}/${total} passed`);

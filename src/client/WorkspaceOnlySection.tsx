@@ -140,7 +140,9 @@ export function WorkspaceOnlySection(
         try {
             const raw = await runLlmTidy() as {status?: unknown; appliedCount?: unknown; detail?: unknown} | null | undefined;
             if (raw == null || typeof raw !== "object") {
-                setTidyInfo(t("error.remote"));
+                // 任务 T42：RPC 本身没返回对象（通道/服务异常）。此前这里报成
+                // "管理通道不可用"，把「整理失败」误指成「通道断了」——分开叙述。
+                setTidyInfo(t("learn.tidyFailed", {detail: t("error.remote")}));
             } else {
                 const detail = typeof raw.detail === "string" && raw.detail !== "" ? ` — ${raw.detail}` : "";
                 setTidyInfo(`${String(raw.status ?? "")}${detail}`);

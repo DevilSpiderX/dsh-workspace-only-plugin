@@ -59,6 +59,7 @@ export const zh = {
     "learn.catalogError": "模型列表加载失败，暂时只能跟随当前模型。",
     "learn.tidy": "立即整理",
     "learn.tidyRunning": "整理中…",
+    "learn.tidyFailed": "整理失败：{detail}",
     "learn.privacy": "整理时会把审批事件中的工具名、命令名与目录发送到所选模型；除此之外的内容不会发出。"
 };
 
@@ -126,5 +127,6 @@ export const en: WorkspaceOnlyDictionary = {
     "learn.catalogError": "Model list failed to load; only the current model can be used for now.",
     "learn.tidy": "Tidy now",
     "learn.tidyRunning": "Tidying…",
+    "learn.tidyFailed": "Tidy failed: {detail}",
     "learn.privacy": "Tidying sends the tool name, command name and directory of approval events to the selected model; nothing else leaves your machine."
 };

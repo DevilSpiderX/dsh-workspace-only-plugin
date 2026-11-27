@@ -21,6 +21,7 @@ import {
 import type {PathEntry, SensitiveConfig, SensitiveHit} from "./scanner.ts";
 import {createLearnService, isLearnable, type PolicyInput} from "./learn.ts";
 import {createLlmTidyService} from "./llm-tidy.ts";
+import {createTidyBridge} from "./llm-bridge.ts";
 import type {LearnHitInput} from "./learn.ts";
 import {initSyntaxParsers} from "./shell-syntax.ts";
 import {ensureScopePersisted, rootSessionIdOf, SCOPE, sessionScope, setSessionScope} from "./session-state.ts";
@@ -630,40 +631,15 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
     // T39：LLM 自动整理学习数据（llm-tidy.ts）。异步、失败不阻塞门禁；
     // 产物只落 llm_group_rules 的组 matcher（LLM 只整理不裁决，计数全部
     // 服务端实算）。模型 "auto" 跟随 `agentDefaultModel.currentSelection()`。
+    // 任务 T42：`llm`/`agentDefaultModel` 是 **可选 cordis Service**，未 inject 时
+    // 属性访问会被 proxy 直接抛 `cannot get property "…" without inject`（可选链
+    // 挡不住）。经 `ctx.get()` 取用（同 `sandboxPolicy`/`typert`/`userQuestions`），
+    // 服务缺席时降级为可读失败而不是抛 inject 错误。详见 `llm-bridge.ts`。
+    const tidyBridge = createTidyBridge(ctx);
     const tidyService = createLlmTidyService({
         db: learnService.db,
-        askModel: async (model, system, user, signal) => {
-            const llm = ctx.llm;
-            if (llm === void 0) throw new Error("llm unavailable");
-            const text: string[] = [];
-            for await (const chunk of llm.stream({
-                provider: model.provider,
-                model: model.model,
-                // effort id 在宿主侧是 branded `ReasoningEffortId`（brand.ts 的
-                // 字符串品牌包装）；这里双断言交回宿主品牌，不引入 dsh-llm 依赖。
-                reasoningEffort: model.reasoningEffortId as unknown as Parameters<typeof llm.stream>[0]["reasoningEffort"],
-                system,
-                messages: [{role: "user", content: [{type: "text", text: user}]}],
-                signal
-            })) {
-                if (chunk.type === "text-delta") text.push(chunk.text);
-                else if (chunk.type === "finish" && chunk.reason.kind !== "stop" && chunk.reason.kind !== "max-tokens") {
-                    // error/aborted 规范化为 terminal finish（不抛）——这里转成
-                    // 失败交给上层记审计；max-tokens 截断交给 JSON 解析自然判废。
-                    throw new Error(`llm finish: ${chunk.reason.kind}`);
-                }
-            }
-            return text.join("");
-        },
-        resolveDefaultModel: () => {
-            const selection = ctx.agentDefaultModel?.currentSelection();
-            if (selection === void 0 || typeof selection.model !== "string") return void 0;
-            return {
-                provider: typeof selection.provider === "string" ? selection.provider : "",
-                model: selection.model,
-                reasoningEffortId: typeof selection.reasoningEffort === "string" ? selection.reasoningEffort : void 0
-            };
-        },
+        askModel: tidyBridge.askModel,
+        resolveDefaultModel: tidyBridge.resolveDefaultModel,
         onApplied: () => learnService.reload()
     }, {
         assist: () => readVolatile(config.llmAssist) !== false,

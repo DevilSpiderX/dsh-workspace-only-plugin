@@ -267,12 +267,12 @@ pnpm install && pnpm build        # 类型检查（tsc --noEmit，strict）+ 构
 pnpm test                         # 单点测试（node:test，tests/*.test.ts，函数级；单跑一个：--test-name-pattern="<名字>"）
 node scripts/verify-scanner.ts   # 词法扫描用例（POSIX + Windows，含误报对照、语法层改善/回归组）
 node scripts/verify-allow-command.ts  # /wo-allow 目录解析用例（家目录展开、绝对路径判定、归一化）
-node scripts/verify-learn.ts     # 无感学习层用例（判决分类、形态签名、归纳回撤、L2 意图自动通过、LLM 组规则、fail-safe 降级）
+node scripts/verify-learn.ts     # 无感学习层用例（判决分类、形态签名、归纳回撤、L2 意图自动通过、LLM 组规则、可选服务经 ctx.get 的源码看守、fail-safe 降级）
 node scripts/verify-session-cleanup.ts  # 孤儿会话白名单目录清理用例（已知 id 集合、宽限期、fail-safe）
 node scripts/check-compat.ts     # 对本机 dsh 安装做契约自检
 ```
 
-实现结构：源码在 `src/`（TypeScript/TSX，strict 类型检查进 build 链）、构建产物在 `lib/`（`pnpm build` 生成，随 git 分发）。`src/host/scanner.ts`（纯词法扫描 + 读写口径 `toolAccessKind` + DSH_HOME 解析 + MSYS 盘符归一 `toWindowsSpelling`，可独立测试）、`src/host/ask.ts`（三键会合点与回退链）、`src/host/approval-compat.ts`（官方审批瀑布封装）、`src/host/session-state.ts`（会话档位三态与审计记录）、`src/host/session-whitelist.ts`（会话级白名单的文件持久化与迁移）、`src/host/session-cleanup.ts`（孤儿会话白名单目录清理，可独立测试）、`src/host/allow-command.ts`（`/wo-allow` 命令的目录解析，纯函数可独立测试）、`src/host/remote-service.ts`（client→host 管理 RPC）、`src/host/index.ts`（门禁装配）、`src/client/**`（React TSX 源码：设置页、composer 会话档位选择框、会话页「白名单目录」视图、会话标题栏待审批徽章与父会话行黄点，UI 组件用 `@deepseek-ai/dsh-client-ui-primitives` 的 `Menu`/`Input`/`Button`，与官方权限选择器同款）→ 构建为单文件 `lib/client.js`。
+实现结构：源码在 `src/`（TypeScript/TSX，strict 类型检查进 build 链）、构建产物在 `lib/`（`pnpm build` 生成，随 git 分发）。`src/host/scanner.ts`（纯词法扫描 + 读写口径 `toolAccessKind` + DSH_HOME 解析 + MSYS 盘符归一 `toWindowsSpelling`，可独立测试）、`src/host/ask.ts`（三键会合点与回退链）、`src/host/approval-compat.ts`（官方审批瀑布封装）、`src/host/session-state.ts`（会话档位三态与审计记录）、`src/host/session-whitelist.ts`（会话级白名单的文件持久化与迁移）、`src/host/session-cleanup.ts`（孤儿会话白名单目录清理，可独立测试）、`src/host/allow-command.ts`（`/wo-allow` 命令的目录解析，纯函数可独立测试）、`src/host/llm-bridge.ts`（可选宿主服务 `llm`/`agentDefaultModel` 的 `ctx.get()` 桥接，可独立测试）、`src/host/remote-service.ts`（client→host 管理 RPC）、`src/host/index.ts`（门禁装配）、`src/client/**`（React TSX 源码：设置页、composer 会话档位选择框、会话页「白名单目录」视图、会话标题栏待审批徽章与父会话行黄点，UI 组件用 `@deepseek-ai/dsh-client-ui-primitives` 的 `Menu`/`Input`/`Button`，与官方权限选择器同款）→ 构建为单文件 `lib/client.js`。
 
 ## 升级说明（会话级放飞 → 会话档位）
 
@@ -283,6 +283,7 @@ node scripts/check-compat.ts     # 对本机 dsh 安装做契约自检
 - **T31：孤儿目录清理**——会话删除后残留的 `sessions/<主会话id>/` 目录自动清掉（启动时 + 每 24h 一轮；归档不清、删除才清，判据与 fail-safe 见「会话级白名单文件」节）。
 - **T39：学习层重设计**——新增 L2 审批意图学习（特征=工具|命令名|目录，样本够且零拒绝的调用自动通过、`verdict: "auto-approved"`）、LLM 自动整理学习数据（`llmAssist` 可关，`llmModel` 默认跟随当前模型）与设置页「学习与自动整理」面板（重置学习数据/立即整理/模型选择）；L1 形态豁免与安全红线不变。管理 RPC 新增 `resetLearnData`/`learnedPolicies`/`removeLearnedPolicy(featureKey)`/`runLlmTidy`/`llmTidyRuns(limit)`。
 - **T41：MSYS 盘符写法归一**——白名单写 `C:\Code`、命令里传 `/c/Code/x` 此前判成两个位置（`path.win32` 与 `path.posix` 语义各自逃逸），白名单永不命中、每次都弹卡片；现在两者互认，`/wo-allow /c/Code` 也写成 `C:\Code` 而不是另存一条互不命中的条目。`deny` 规则同样跨拼写匹配（底线规则不能因写法漏放）。多字母一级段（`/etc`、`/usr`）不映射为盘符。
+- **T42：学习面板 inject 抛错**——`llm`/`agentDefaultModel` 是可选宿主服务，旧代码用 `ctx.llm` / `ctx.agentDefaultModel` 直访问，cordis 对未 inject 的属性直接抛 `cannot get property "…" without inject`（面板红字、「立即整理」不可用）。现在改由 `src/host/llm-bridge.ts` 经 `ctx.get()` 取用（不进 `inject`——cordis 没有可选 inject，缺服务的 composition 会让整个插件不激活），服务缺席时「整理」如实报失败而不是抛 inject 错误；RPC 本身失败时前端也不再把文案误报成「管理通道不可用」。
 - 管理 RPC 有变更（若你有脚本直调 `workspaceOnly/*`）：`setBypass(sessionId, enabled)` → `setScope(sessionId, scope)`（`scope` ∈ `workspace` / `outside-read` / `outside-write`），新增 `addGlobalAlways(dir)`，`snapshot` 的 `sessions[]` 由 `bypass: boolean` 改为 `scope: string`。
 - 管理 RPC 的 `args` 字段名（`sessionId`/`scope`/`dir`/`entry`/`requestId`/`choice`）即各方法的 wire 契约，由插件注册的 strict 调用描述符固定（此前源码签名推断的方式在压缩产物上会全部报 `args fields do not match the descriptor`）；改方法签名或调用载荷后跑 `node scripts/verify-remote-service.ts` 核对三方一致。
 
