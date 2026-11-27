@@ -7,9 +7,13 @@
  * `expandHomeSpelling`）先展开再判定，展开不了的保持原值、随后被绝对路径
  * 判定拒绝；归一化（折叠 `..`/重复分隔符、去尾分隔符但保留文件系统根）后
  * 交给白名单写入（`allowAlways`，与卡片「总是允许该目录」同一条路径）。
+ *
+ * 任务 T41：Windows 宿主上 MSYS 盘符写法（`/c/Code`、`/cygdrive/c/Code`）先
+ * 归一为盘符写法，这样 `/wo-allow /c/Code` 与卡片「总是允许该目录」写出同一条
+ * `C:\Code`，白名单不会出现两种拼写各存一份、而门禁只认其一的错配。
  */
 import {posix, win32} from "node:path";
-import {expandHomeSpelling} from "./scanner.ts";
+import {expandHomeSpelling, toWindowsSpelling} from "./scanner.ts";
 import type {EnvVars} from "./scanner.ts";
 
 /** 解析结果：成功给出可写入白名单的目录；失败给出原因（供命令文案映射）。 */
@@ -37,16 +41,19 @@ function stripTrailingSeparators(value: string): string {
  * `process.env`；显式 env 缺 HOME/USERPROFILE 时家目录写法无法展开，按
  * fail-closed 拒绝（同 `scanner.ts` 的决策 D3）。
  */
-export function parseAllowDirInput(raw: string, env: EnvVars = process.env): AllowDirParse {
+export function parseAllowDirInput(raw: string, env: EnvVars = process.env, platform: NodeJS.Platform = process.platform): AllowDirParse {
     const value = raw.trim();
     if (value === "") return {ok: false, reason: "empty"};
     const expanded = expandHomeSpelling(value, env) ?? value;
-    const mod = windowsShape(expanded) ? win32 : posix;
-    if (!mod.isAbsolute(expanded)) return {ok: false, reason: "not-absolute"};
+    // 任务 T41：只在 Windows 宿主上做 MSYS 归一（POSIX 主机上 `/c/Code` 是根下
+    // 的 `c` 目录，归一成盘符会指向完全不同的位置）。
+    const spelling = platform === "win32" ? toWindowsSpelling(expanded) : expanded;
+    const mod = windowsShape(spelling) ? win32 : posix;
+    if (!mod.isAbsolute(spelling)) return {ok: false, reason: "not-absolute"};
     // 归一化折叠 `..`/重复分隔符，但 `posix.normalize` 会把 UNC 斜杠写法
     //（`//server/share`）开头的双斜杠折叠掉——丢失 UNC 语义，白名单条目
     // 永远匹配不上真实 UNC 目标。normalize 后把开头双斜杠补回。
-    const normalized = mod.normalize(expanded);
-    const unc = expanded.startsWith("//") && !normalized.startsWith("//") ? `/${normalized}` : normalized;
+    const normalized = mod.normalize(spelling);
+    const unc = spelling.startsWith("//") && !normalized.startsWith("//") ? `/${normalized}` : normalized;
     return {ok: true, dir: stripTrailingSeparators(unc)};
 }

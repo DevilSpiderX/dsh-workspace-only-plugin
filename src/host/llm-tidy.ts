@@ -49,7 +49,17 @@ export interface TidyOptions {
 
 /** 整理服务的依赖（存储、LLM、默认模型解析、产物落库回调）。 */
 export interface TidyDeps {
-    readonly db: LearnDb;
+    /**
+     * 学习库的**取值函数**（不是库对象本身）。`learnService.db` 在
+     * `openLearnDb` resolve 之前一直是 `UNAVAILABLE` 快照——装配时把对象拷进来
+     * 会让整理服务永远看到 `available: false`（「立即整理」恒定
+     * `failed — db unavailable` 的根因）。每次用时取当前值。
+     */
+    readonly db: () => LearnDb;
+    /** 学习库首次打开完成的信号（等待后就绪，失败也是 resolve）。 */
+    readonly ready?: Promise<void>;
+    /** 等就绪的上限（毫秒；缺省 {@link TIDY_READY_WAIT_MS}）。测试用来缩短等待。 */
+    readonly readyWaitMs?: number;
     readonly askModel: AskModelFn;
     /** `ctx.agentDefaultModel.currentSelection()` 适配（`"auto"` 路由）。 */
     readonly resolveDefaultModel: () => ModelRef | undefined;
@@ -81,6 +91,8 @@ const TIDY_INTERVAL_MS = 86_400_000;
 const TIDY_EVENT_LIMIT = 200;
 /** LLM 调用超时（fail-safe：超时弃用，绝不拖住门禁/定时器）。 */
 const TIDY_CALL_TIMEOUT_MS = 60_000;
+/** 等学习库首次打开的上限（迁移 + 建连接的正常耗时远小于此）。 */
+const TIDY_READY_WAIT_MS = 10_000;
 /** 校验上限：组数与各段 glob 长度（LLM 输出是不可信输入）。 */
 const TIDY_MAX_GROUPS = 50;
 const TIDY_MAX_PATTERN = 256;
@@ -194,9 +206,41 @@ export function createLlmTidyService(deps: TidyDeps, options: TidyOptions): LlmT
     let running: Promise<TidyRunSummary> | undefined;
     let lastRunAt = 0;
 
-    const audit = (model: string, promptDigest: string, outputJson: string, status: string, appliedCount: number): void => {
+    /**
+     * 等学习库首次打开完成。`openLearnDb` 是异步的（迁移 + 建立连接），而整理
+     * 服务在装配时就被创建——不等就绪会看到 `UNAVAILABLE` 快照，把「还没打开」
+     * 误报成「库不可用」。等待有上限：就绪信号异常时按不可用处理，绝不挂住。
+     */
+    const waitReady = async (): Promise<void> => {
+        const ready = deps.ready;
+        if (ready === void 0) return;
+        let timer: ReturnType<typeof setTimeout> | undefined;
         try {
-            deps.db.recordTidyRun({createdAt: Date.now(), model, promptDigest, outputJson, status, appliedCount});
+            await Promise.race([
+                ready,
+                new Promise<void>((resolve) => {
+                    timer = setTimeout(resolve, deps.readyWaitMs ?? TIDY_READY_WAIT_MS);
+                    timer.unref?.();
+                })
+            ]);
+        } catch {
+            // 就绪信号自身失败：按不可用处理（下游会读 db.detail 说明原因）。
+        } finally {
+            if (timer !== void 0) clearTimeout(timer);
+        }
+    };
+
+    /** 当前库 + 可用性判定（不可用时把具体原因带进结果文案，便于定位）。 */
+    const resolveDb = async (): Promise<{db: LearnDb; detail: string}> => {
+        if (!deps.db().available) await waitReady();
+        const db = deps.db();
+        if (db.available) return {db, detail: ""};
+        return {db, detail: db.detail === "" ? "db unavailable" : `db unavailable: ${db.detail}`};
+    };
+
+    const audit = (db: LearnDb, model: string, promptDigest: string, outputJson: string, status: string, appliedCount: number): void => {
+        try {
+            db.recordTidyRun({createdAt: Date.now(), model, promptDigest, outputJson, status, appliedCount});
         } catch {
             // 审计失败不阻塞。
         }
@@ -208,16 +252,19 @@ export function createLlmTidyService(deps: TidyDeps, options: TidyOptions): LlmT
         running = (async (): Promise<TidyRunSummary> => {
             const modelRef = resolveTidyModel(options.model(), options.reasoningEffort(), deps.resolveDefaultModel());
             const modelLabel = modelRef === void 0 ? "" : `${modelRef.provider}::${modelRef.model}`;
+            let db: LearnDb | undefined;
             try {
                 if (options.assist() !== true) return {status: "skipped", model: modelLabel, appliedCount: 0, detail: "llmAssist off"};
-                if (!deps.db.available) return {status: "failed", model: modelLabel, appliedCount: 0, detail: "db unavailable"};
+                const opened = await resolveDb();
+                db = opened.db;
+                if (!opened.db.available) return {status: "failed", model: modelLabel, appliedCount: 0, detail: opened.detail};
                 if (modelRef === void 0) {
-                    audit("", "", "", "failed", 0);
+                    audit(opened.db, "", "", "", "failed", 0);
                     return {status: "failed", model: "", appliedCount: 0, detail: "no model"};
                 }
                 // 事件投影（隐私面：工具/命令名/目录/判决；auto-approved 非用户表态，剔除）。
                 const samples: TidySample[] = [];
-                for (const event of deps.db.searchApprovals("", TIDY_EVENT_LIMIT)) {
+                for (const event of opened.db.searchApprovals("", TIDY_EVENT_LIMIT)) {
                     if (event.verdict === "auto-approved") continue;
                     samples.push({tool: event.tool, commandName: commandNameOf(event.command), dir: event.dir, verdict: event.verdict});
                 }
@@ -237,19 +284,19 @@ export function createLlmTidyService(deps: TidyDeps, options: TidyOptions): LlmT
                 }
                 const matchers = parseTidyOutput(output);
                 if (matchers === void 0) {
-                    audit(modelLabel, promptDigest, output, "failed", 0);
+                    audit(opened.db, modelLabel, promptDigest, output, "failed", 0);
                     return {status: "failed", model: modelLabel, appliedCount: 0, detail: "invalid output"};
                 }
                 // 组计数实算 + 按 matcher 文本去重落库（同文本复用 id upsert）。
                 const existing = new Map<string, LlmGroupRule>();
-                for (const rule of deps.db.groupRules()) existing.set(JSON.stringify(rule.matcher), rule);
-                const policies = deps.db.policies();
+                for (const rule of opened.db.groupRules()) existing.set(JSON.stringify(rule.matcher), rule);
+                const policies = opened.db.policies();
                 let applied = 0;
                 const at = Date.now();
                 for (const matcher of matchers) {
                     const counts = computeGroupCounts(matcher, policies);
                     const prior = existing.get(JSON.stringify(matcher));
-                    deps.db.writeGroupRule({
+                    opened.db.writeGroupRule({
                         id: prior?.id ?? uuidv7(),
                         matcher,
                         sampleCount: counts.sampleCount,
@@ -263,11 +310,11 @@ export function createLlmTidyService(deps: TidyDeps, options: TidyOptions): LlmT
                 }
                 lastRunAt = at;
                 deps.onApplied?.();
-                audit(modelLabel, promptDigest, output, "ok", applied);
+                audit(opened.db, modelLabel, promptDigest, output, "ok", applied);
                 return {status: "ok", model: modelLabel, appliedCount: applied, detail: ""};
             } catch (error) {
                 const detail = error instanceof Error ? error.message : String(error);
-                audit(modelLabel, "", "", "failed", 0);
+                audit(db ?? deps.db(), modelLabel, "", "", "failed", 0);
                 return {status: "failed", model: modelLabel, appliedCount: 0, detail};
             } finally {
                 running = void 0;
@@ -279,8 +326,10 @@ export function createLlmTidyService(deps: TidyDeps, options: TidyOptions): LlmT
     return {
         tick() {
             try {
-                if (options.assist() !== true || !deps.db.available || running !== void 0) return;
-                const events = deps.db.searchApprovals("", TIDY_EVENT_LIMIT);
+                if (options.assist() !== true || running !== void 0) return;
+                const db = deps.db();
+                if (!db.available) return;
+                const events = db.searchApprovals("", TIDY_EVENT_LIMIT);
                 const newest = events[0]?.at ?? 0;
                 if (newest <= lastRunAt) return;
                 const fresh = events.filter((event) => event.at > lastRunAt).length;

@@ -239,8 +239,9 @@ export interface LearnService {
     search(query: string, limit?: number): HitEvent[];
     /** 从存储重载策略/组规则缓存（LLM 整理产物落库后调用）。 */
     reload(): void;
-    /** 重置全部学习数据（T39 设置页按钮）：清库 + 清缓存。 */
-    resetLearnData(): boolean;
+    /** 重置全部学习数据（T39 设置页按钮）：清库 + 清缓存。等库就绪，
+     *  未就绪时不再静默返回 false（那是启动竞态、不是失败）。 */
+    resetLearnData(): Promise<boolean>;
     close(): void;
 }
 
@@ -411,7 +412,9 @@ export function createLearnService(dbPath: string, options: LearnOptions): Learn
             if (!ready || !db.available) return;
             loadCaches();
         },
-        resetLearnData() {
+        async resetLearnData() {
+            // 等首次打开完成：装配后立刻点「重置」曾是静默 false（启动竞态）。
+            await readyPromise.catch(() => void 0);
             if (!db.available) return false;
             db.resetAll();
             cache.clear();

@@ -5,13 +5,14 @@
  *
  *   node scripts/verify-learn.ts
  */
-import {mkdtempSync, writeFileSync} from "node:fs";
+import {mkdtempSync, readFileSync, writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {fileURLToPath} from "node:url";
 import {Migrator} from "@wuyuchentr/database-migration-tool";
 import {createLearnService, decidesExemption, shapeSignature, verdictClass} from "../src/host/learn.ts";
 import type {LearnHitInput} from "../src/host/learn.ts";
+import {createLlmTidyService} from "../src/host/llm-tidy.ts";
 import {UUIDV7_PATTERN} from "../src/host/uuid.ts";
 
 let pass = 0;
@@ -226,7 +227,7 @@ const hit = (over: Partial<LearnHitInput> = {}): LearnHitInput => ({
     service.reload();
     check("group deny contagion blocks auto-approve", service.shouldAutoApprove({tool: "pwsh", commandName: "docker", dir: "E:\\other"}) === false);
     // 重置：全部学习表清空、重新开始学习。
-    check("resetLearnData clears everything", service.resetLearnData() === true && service.db.policies().length === 0 && service.features().length === 0 && service.db.groupRules().length === 0);
+    check("resetLearnData clears everything", await service.resetLearnData() === true && service.db.policies().length === 0 && service.features().length === 0 && service.db.groupRules().length === 0);
     service.close();
 }
 
@@ -252,6 +253,71 @@ const hit = (over: Partial<LearnHitInput> = {}): LearnHitInput => ({
     check("gate-on restores L1 exemption", service.isExempt("pwsh|make|arg|soft-path|none") === true);
     check("gate-on restores L2 auto-approve", service.shouldAutoApprove(input) === true);
     service.close();
+}
+
+// --- T42 源码文本看守：可选服务（llm / agentDefaultModel）必须经 ctx.get() 取 ---
+{
+    // cordis 的 proxy get trap 对未 inject 的属性**直接抛** `cannot get property
+    // "X" without inject`（不是 undefined，可选链挡不住），而 inject 里加可选服务
+    // 会让缺服务的 composition 整个插件不激活（fail-open）。所以这两处只允许走
+    // `ctx.get(...)`（ReflectService，不经 get trap）。这条看守钉住装配层不退化。
+    const source = readFileSync(fileURLToPath(new URL("../src/host/index.ts", import.meta.url)), "utf8");
+    const directAccess = /ctx\s*(?:\?\.)?\.\s*(?:llm|agentDefaultModel)\b/.exec(source);
+    check("index.ts 无 ctx.llm / ctx.agentDefaultModel 直访问（T42）", directAccess === null, directAccess?.[0]);
+    const bridge = readFileSync(fileURLToPath(new URL("../src/host/llm-bridge.ts", import.meta.url)), "utf8");
+    check("llm-bridge 经 services.get 取可选服务", /services\??\.get\(/.test(bridge) && /"(?:llm|agentDefaultModel)"/.test(bridge));
+    check("llm-bridge 不直访问 ctx 属性", /ctx\s*(?:\?\.)?\.\s*(?:llm|agentDefaultModel)\b/.test(bridge) === false);
+}
+
+// --- T43 整理服务必须看到**就绪后**的学习库（不是装配时的 UNAVAILABLE 快照）---
+{
+    const dbPath = join(dir, "learn-t43.sqlite3");
+    const learn = createLearnService(dbPath, {enabled: () => true, threshold: () => 3, retentionDays: () => 90, autoApprove: () => true, autoApproveThreshold: () => 0.95, autoApproveMinSamples: () => 5});
+    await learn.ready;
+    learn.db.recordApproval({at: Date.now(), tool: "bash", command: "cat /etc/hosts", dir: "/etc", reason: "outside", targets: "/etc/hosts", sensitive: false, verdict: "once", channel: "card", ms: 100, sessionId: "s1"});
+    let asked = 0;
+    const tidy = createLlmTidyService({
+        // 关键：取值函数在装配后才 resolve 成可用库（模拟 index.ts 的装配顺序）。
+        db: () => learn.db,
+        ready: learn.ready,
+        askModel: async () => {
+            asked += 1;
+            return "{\"groups\":[{\"tool\":\"bash\",\"command\":\"cat\",\"dir\":\"/etc\"}]}";
+        },
+        resolveDefaultModel: () => ({provider: "p", model: "m"})
+    }, {assist: () => true, model: () => "p::m", reasoningEffort: () => "default"});
+    const summary = await tidy.run();
+    check("tidy sees the ready db (not the assembly-time snapshot)", summary.status === "ok" && summary.appliedCount === 1 && asked === 1, JSON.stringify(summary));
+    check("tidy recorded an audit row", learn.db.tidyRuns(5).length === 1 && learn.db.tidyRuns(5)[0].status === "ok");
+    learn.close();
+}
+
+// --- T43 库不可用时结果文案带**具体原因**（不再是笼统的 db unavailable）---
+{
+    const badPath = join(dir, "corrupt-t43.sqlite3");
+    writeFileSync(badPath, "not a sqlite database", "utf8");
+    const learn = createLearnService(badPath, {enabled: () => true, threshold: () => 3, retentionDays: () => 90, autoApprove: () => true, autoApproveThreshold: () => 0.95, autoApproveMinSamples: () => 5});
+    await learn.ready;
+    const tidy = createLlmTidyService({
+        db: () => learn.db,
+        ready: learn.ready,
+        askModel: async () => "{}",
+        resolveDefaultModel: () => ({provider: "p", model: "m"})
+    }, {assist: () => true, model: () => "p::m", reasoningEffort: () => "default"});
+    const summary = await tidy.run();
+    check("unavailable db keeps a concrete cause", summary.status === "failed" && summary.detail.startsWith("db unavailable: ") && summary.detail.length > "db unavailable: ".length, summary.detail);
+    learn.close();
+}
+
+// --- T43 装配看守：整理服务必须拿到**取值函数**而不是库对象快照 ---
+{
+    // `openLearnDb` 是异步的，装配那一刻 `learnService.db` 还是 UNAVAILABLE
+    // 快照；把对象直接传进整理服务会让它永远看到 available:false（「立即
+    // 整理」恒定 failed — db unavailable）。这条看守钉住装配形态不退化。
+    const source = readFileSync(fileURLToPath(new URL("../src/host/index.ts", import.meta.url)), "utf8");
+    const snapshotPass = /db\s*:\s*learnService\s*\.\s*db\b/.exec(source);
+    check("index.ts 不把 learnService.db 快照直接交给整理服务（T43）", snapshotPass === null, snapshotPass?.[0]);
+    check("index.ts 以取值函数 + ready 信号装配整理服务（T43）", /db\s*:\s*\(\s*\)\s*=>\s*learnService\s*\.\s*db\b/u.test(source) && /ready\s*:\s*learnService\s*\.\s*ready\b/u.test(source));
 }
 
 console.log(`${pass}/${total} passed`);

@@ -15,11 +15,13 @@ import {
     resolveDshHome,
     scanTargets,
     sensitiveMatch,
+    toWindowsSpelling,
     toolAccessKind
 } from "./scanner.ts";
 import type {PathEntry, SensitiveConfig, SensitiveHit} from "./scanner.ts";
 import {createLearnService, isLearnable, type PolicyInput} from "./learn.ts";
 import {createLlmTidyService} from "./llm-tidy.ts";
+import {createTidyBridge} from "./llm-bridge.ts";
 import type {LearnHitInput} from "./learn.ts";
 import {initSyntaxParsers} from "./shell-syntax.ts";
 import {ensureScopePersisted, rootSessionIdOf, SCOPE, sessionScope, setSessionScope} from "./session-state.ts";
@@ -272,9 +274,14 @@ function canonicalizeBestEffort(target: string): string | undefined {
  * 如 macOS 的 `/tmp` -> `/private/tmp`），最终包含判定复用 `lexicallyWithin`，
  * 这样 win32 的大小写/盘符/UNC 语义成立，磁盘上的大小写差异无关紧要。
  * 任何解析失败都算外部（fail-closed）。
+ *
+ * 任务 T41：Windows 宿主上先把 MSYS 盘符写法（`/c/Code/x`）归一为盘符写法 ——
+ * 宿主的 `path.resolve`/`realpathSync` 会把 `/c/...` 解析到**当前盘根**下的
+ * `c` 目录（`D:\c\Code\x`），逐级上溯后必然被判成工作区外。
  */
 function escapesViaRealpath(target: string, root: string): boolean {
-    const abs = isAbsolute(target) ? target : resolve(root, target);
+    const value = process.platform === "win32" ? toWindowsSpelling(target) : target;
+    const abs = isAbsolute(value) ? value : resolve(root, value);
     const realTarget = canonicalizeBestEffort(abs);
     const realRoot = canonicalizeBestEffort(root);
     if (realTarget === void 0 || realRoot === void 0) return true;
@@ -624,40 +631,19 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
     // T39：LLM 自动整理学习数据（llm-tidy.ts）。异步、失败不阻塞门禁；
     // 产物只落 llm_group_rules 的组 matcher（LLM 只整理不裁决，计数全部
     // 服务端实算）。模型 "auto" 跟随 `agentDefaultModel.currentSelection()`。
+    // 任务 T42：`llm`/`agentDefaultModel` 是 **可选 cordis Service**，未 inject 时
+    // 属性访问会被 proxy 直接抛 `cannot get property "…" without inject`（可选链
+    // 挡不住）。经 `ctx.get()` 取用（同 `sandboxPolicy`/`typert`/`userQuestions`），
+    // 服务缺席时降级为可读失败而不是抛 inject 错误。详见 `llm-bridge.ts`。
+    const tidyBridge = createTidyBridge(ctx);
     const tidyService = createLlmTidyService({
-        db: learnService.db,
-        askModel: async (model, system, user, signal) => {
-            const llm = ctx.llm;
-            if (llm === void 0) throw new Error("llm unavailable");
-            const text: string[] = [];
-            for await (const chunk of llm.stream({
-                provider: model.provider,
-                model: model.model,
-                // effort id 在宿主侧是 branded `ReasoningEffortId`（brand.ts 的
-                // 字符串品牌包装）；这里双断言交回宿主品牌，不引入 dsh-llm 依赖。
-                reasoningEffort: model.reasoningEffortId as unknown as Parameters<typeof llm.stream>[0]["reasoningEffort"],
-                system,
-                messages: [{role: "user", content: [{type: "text", text: user}]}],
-                signal
-            })) {
-                if (chunk.type === "text-delta") text.push(chunk.text);
-                else if (chunk.type === "finish" && chunk.reason.kind !== "stop" && chunk.reason.kind !== "max-tokens") {
-                    // error/aborted 规范化为 terminal finish（不抛）——这里转成
-                    // 失败交给上层记审计；max-tokens 截断交给 JSON 解析自然判废。
-                    throw new Error(`llm finish: ${chunk.reason.kind}`);
-                }
-            }
-            return text.join("");
-        },
-        resolveDefaultModel: () => {
-            const selection = ctx.agentDefaultModel?.currentSelection();
-            if (selection === void 0 || typeof selection.model !== "string") return void 0;
-            return {
-                provider: typeof selection.provider === "string" ? selection.provider : "",
-                model: selection.model,
-                reasoningEffortId: typeof selection.reasoningEffort === "string" ? selection.reasoningEffort : void 0
-            };
-        },
+        // 取值函数而不是库对象：`openLearnDb` 是异步的，装配时
+        // `learnService.db` 还是 `UNAVAILABLE` 快照（「立即整理」恒定
+        // `failed — db unavailable` 的根因）。配合 ready 信号等就绪。
+        db: () => learnService.db,
+        ready: learnService.ready,
+        askModel: tidyBridge.askModel,
+        resolveDefaultModel: tidyBridge.resolveDefaultModel,
         onApplied: () => learnService.reload()
     }, {
         assist: () => readVolatile(config.llmAssist) !== false,
@@ -957,7 +943,7 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
             events: learnService.db.searchApprovals(String(query), typeof limit === "number" && Number.isFinite(limit) ? limit : 50)
         }),
         // T39：设置页「重置学习数据」——清空六表重新开始学习。
-        resetLearnData: () => ({reset: learnService.resetLearnData()}),
+        resetLearnData: () => learnService.resetLearnData().then((reset) => ({reset})),
         learnedPolicies: () => ({policies: learnService.db.policies()}),
         removeLearnedPolicy: (featureKey) => ({removed: learnService.removePolicy(String(featureKey))}),
         // T39：设置页「立即整理」——异步跑一轮 LLM 整理并返回摘要。

@@ -15,6 +15,7 @@ import {
     pathReason,
     sameLocation,
     sensitiveMatch,
+    toWindowsSpelling,
     toolAccessKind
 } from "../src/host/scanner.ts";
 
@@ -64,6 +65,52 @@ describe("lexicallyWithin（词法包含）", () => {
     });
 });
 
+describe("toWindowsSpelling（MSYS 盘符写法归一，T41）", () => {
+    it("单字母段=盘符：/c/x 与 /cygdrive/c/x", () => {
+        assert.equal(toWindowsSpelling("/c/Code/internal"), "C:\\Code\\internal");
+        assert.equal(toWindowsSpelling("/cygdrive/c/Code"), "C:\\Code");
+        assert.equal(toWindowsSpelling("/c"), "C:\\");
+        assert.equal(toWindowsSpelling("/C/"), "C:\\");
+    });
+
+    it("多字母段与相对写法原样返回（POSIX 根不受影响）", () => {
+        assert.equal(toWindowsSpelling("/etc/passwd"), "/etc/passwd");
+        assert.equal(toWindowsSpelling("/usr/local/bin"), "/usr/local/bin");
+        assert.equal(toWindowsSpelling("/cc/Code"), "/cc/Code");
+        assert.equal(toWindowsSpelling("c/Code"), "c/Code");
+        assert.equal(toWindowsSpelling("C:\\Code"), "C:\\Code");
+    });
+});
+
+describe("MSYS 盘符形态与盘符形态互相命中（T41：白名单不同写法不再失效）", () => {
+    it("目标 /c/... 落在白名单 C:\\Code 内", () => {
+        assert.equal(lexicallyWithin("/c/Code/internal/business-platform-server-wt1", "C:\\Code"), true);
+        assert.equal(lexicallyWithin("/c/Code/internal/a.txt", "c:\\code"), true);
+        assert.equal(lexicallyWithin("/cygdrive/c/Code/x", "C:\\Code"), true);
+    });
+
+    it("反向：盘符目标落在 /c/... 条目内", () => {
+        assert.equal(lexicallyWithin("C:\\Code\\internal\\a.txt", "/c/Code"), true);
+    });
+
+    it("逃逸与跨盘符仍判外部", () => {
+        assert.equal(lexicallyWithin("/c/Other/x", "C:\\Code"), false);
+        assert.equal(lexicallyWithin("/d/Code/x", "C:\\Code"), false);
+        assert.equal(lexicallyWithin("/c/Code/../Other/x", "C:\\Code"), false);
+    });
+
+    it("两侧都不是 Windows 形态时不做归一（POSIX 语义保持）", () => {
+        assert.equal(lexicallyWithin("/c/Code/x", "/c"), true);
+        assert.equal(lexicallyWithin("/c/Code/x", "/home/me"), false);
+        assert.equal(lexicallyWithin("/etc/passwd", posixRoot), false);
+    });
+
+    it("sameLocation 跨拼写成立", () => {
+        assert.equal(sameLocation("/c/Code", "C:\\Code"), true);
+        assert.equal(sameLocation("/c/Code", "C:\\Other"), false);
+    });
+});
+
 describe("denyMatch（deny 规则）", () => {
     it("分隔符结尾=目录前缀包含，否则 glob", () => {
         assert.equal(denyMatch("/etc/passwd", ["/etc/"]), "/etc/");
@@ -73,6 +120,12 @@ describe("denyMatch（deny 规则）", () => {
 
     it("两侧都做家目录展开", () => {
         assert.equal(denyMatch("~/secret/a.txt", ["~/secret/"]), "~/secret/");
+    });
+
+    it("MSYS 目标命中盘符形态 deny 规则（T41）", () => {
+        assert.equal(denyMatch("/c/secret/a.pem", ["C:\\secret\\"]), "C:\\secret\\");
+        assert.equal(denyMatch("/c/secret/a.pem", ["C:\\secret\\*.pem"]), "C:\\secret\\*.pem");
+        assert.equal(denyMatch("/c/other/a.pem", ["C:\\secret\\*.pem"]), void 0);
     });
 });
 
@@ -89,6 +142,17 @@ describe("directoryOf（白名单目录推导）", () => {
         assert.equal(directoryOf("C:\\tmp\\a.txt"), "C:\\tmp");
         assert.equal(directoryOf("C:\\tmp\\"), "C:\\tmp\\");
         assert.equal(directoryOf("~"), "~");
+    });
+
+    it("Windows 宿主上 MSYS 写法归一为盘符写法（T41：卡片目录与白名单同拼写）", () => {
+        assert.equal(directoryOf("/c/Code/internal/a.txt", true), "C:\\Code\\internal");
+        assert.equal(directoryOf("/c/Code/internal/business-platform-server-wt1", true), "C:\\Code\\internal");
+        assert.equal(directoryOf("/c/Code/internal/", true), "C:\\Code\\internal\\");
+    });
+
+    it("POSIX 宿主上保持原写法（那是根下的 c 目录，不是盘符）", () => {
+        assert.equal(directoryOf("/c/Code/internal/a.txt", false), "/c/Code/internal");
+        assert.equal(directoryOf("/home/me/a.txt", false), "/home/me");
     });
 });
 

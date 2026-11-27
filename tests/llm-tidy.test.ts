@@ -4,8 +4,9 @@
  */
 import {describe, it} from "node:test";
 import assert from "node:assert/strict";
-import {commandNameOf, computeGroupCounts, parseTidyOutput, resolveTidyModel} from "../src/host/llm-tidy.ts";
-import type {LearnedPolicy} from "../src/host/learn-db.ts";
+import {commandNameOf, computeGroupCounts, createLlmTidyService, parseTidyOutput, resolveTidyModel} from "../src/host/llm-tidy.ts";
+import {unavailableDb} from "../src/host/learn-db.ts";
+import type {ApprovalEvent, LearnDb, LearnedPolicy, LlmGroupRule} from "../src/host/learn-db.ts";
 
 describe("parseTidyOutput（LLM 输出严格校验：只信三段 glob）", () => {
     it("合法输出取 matcher 三段，数字字段一律无视（LLM 无法虚报计数）", () => {
@@ -86,5 +87,100 @@ describe("commandNameOf（命令名=首词小写，与 PolicyInput 对齐）", (
     it("取首词并小写", () => {
         assert.equal(commandNameOf("Docker Run -v x"), "docker");
         assert.equal(commandNameOf(""), "");
+    });
+});
+
+/** 最小假库：只实现整理流程用到的面（其余沿用不可用 stub 的空实现）。 */
+const fakeDb = (events: readonly ApprovalEvent[], over: Partial<LearnDb> = {}): LearnDb => {
+    const rules: LlmGroupRule[] = [];
+    return {
+        ...unavailableDb(""),
+        available: true,
+        detail: "",
+        searchApprovals: () => [...events],
+        policies: () => [],
+        groupRules: () => [...rules],
+        writeGroupRule: (rule) => {
+            rules.push(rule);
+        },
+        recordTidyRun: () => {
+        },
+        ...over
+    };
+};
+
+const sampleEvent = (verdict: string): ApprovalEvent => ({
+    id: "id",
+    at: Date.now(),
+    tool: "bash",
+    command: "cat /etc/hosts",
+    dir: "/etc",
+    reason: "outside",
+    targets: "/etc/hosts",
+    sensitive: false,
+    verdict,
+    channel: "card",
+    ms: 10,
+    sessionId: "s1"
+});
+
+describe("createLlmTidyService（T43：库句柄在用时取当前值 + 等就绪）", () => {
+    const options = {assist: () => true, model: () => "p::m", reasoningEffort: () => "default"};
+
+    it("装配时库还是不可用快照，就绪后照常整理（不再恒定 db unavailable）", async () => {
+        const readyDb = fakeDb([sampleEvent("once")]);
+        let current: LearnDb = unavailableDb("opening");
+        let release: () => void = () => {
+        };
+        const ready = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const service = createLlmTidyService({
+            db: () => current,
+            ready,
+            askModel: async () => '{"groups":[{"tool":"bash","command":"cat","dir":"/etc"}]}',
+            resolveDefaultModel: () => ({provider: "p", model: "m"})
+        }, options);
+        const pending = service.run();
+        current = readyDb;
+        release();
+        const summary = await pending;
+        assert.equal(summary.status, "ok");
+        assert.equal(summary.appliedCount, 1);
+    });
+
+    it("库确实不可用时报出具体原因", async () => {
+        const service = createLlmTidyService({
+            db: () => unavailableDb("migration failed: file is not a database"),
+            askModel: async () => "{}",
+            resolveDefaultModel: () => ({provider: "p", model: "m"})
+        }, options);
+        const summary = await service.run();
+        assert.equal(summary.status, "failed");
+        assert.match(summary.detail, /^db unavailable: migration failed/u);
+    });
+
+    it("就绪信号永不 resolve 也不挂住（上限等待后按不可用处理）", async () => {
+        const service = createLlmTidyService({
+            db: () => unavailableDb("still opening"),
+            ready: new Promise<void>(() => {
+            }),
+            readyWaitMs: 5,
+            askModel: async () => "{}",
+            resolveDefaultModel: () => ({provider: "p", model: "m"})
+        }, options);
+        const summary = await service.run();
+        assert.equal(summary.status, "failed");
+        assert.match(summary.detail, /^db unavailable: still opening$/u);
+    });
+
+    it("开关关闭时仍先报 skipped（不需要碰库）", async () => {
+        const service = createLlmTidyService({
+            db: () => unavailableDb("never opened"),
+            askModel: async () => "{}",
+            resolveDefaultModel: () => ({provider: "p", model: "m"})
+        }, {...options, assist: () => false});
+        const summary = await service.run();
+        assert.equal(summary.status, "skipped");
     });
 });
