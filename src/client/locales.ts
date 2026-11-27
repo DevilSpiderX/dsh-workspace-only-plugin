@@ -3,8 +3,6 @@ export const zh = {
     "description": "开启后，任何模式下代理的文件访问都仅限当前工作目录",
     "loading": "加载中",
     "unavailable": "不可用",
-    "on": "已开启",
-    "off": "已关闭",
     "scope.workspace": "仅工作区内",
     "scope.outsideRead": "工作区外只读",
     "scope.outsideWrite": "完全放开",
@@ -60,6 +58,12 @@ export const zh = {
     "learn.tidy": "立即整理",
     "learn.tidyRunning": "整理中…",
     "learn.tidyFailed": "整理失败：{detail}",
+    "learn.tidyOk": "整理完成：写入 {count} 组",
+    "learn.tidyNoSamples": "整理完成：暂无审批样本",
+    "learn.tidySkipped": "已跳过：大模型整理开关关闭",
+    "learn.tidyNoModel": "失败：没有可用模型（选择具体模型或先设置默认模型）",
+    "learn.resetOk": "学习数据已重置",
+    "learn.resetFailed": "重置失败：学习库不可用",
     "learn.privacy": "整理时会把审批事件中的工具名、命令名与目录发送到所选模型；除此之外的内容不会发出。"
 };
 
@@ -71,8 +75,6 @@ export const en: WorkspaceOnlyDictionary = {
     "description": "When on, agent file access in every mode is confined to the current workspace",
     "loading": "Loading",
     "unavailable": "Unavailable",
-    "on": "On",
-    "off": "Off",
     "scope.workspace": "Workspace only",
     "scope.outsideRead": "Outside read",
     "scope.outsideWrite": "Fully released",
@@ -128,5 +130,11 @@ export const en: WorkspaceOnlyDictionary = {
     "learn.tidy": "Tidy now",
     "learn.tidyRunning": "Tidying…",
     "learn.tidyFailed": "Tidy failed: {detail}",
+    "learn.tidyOk": "Tidy done: {count} group(s) written",
+    "learn.tidyNoSamples": "Tidy done: no approval samples yet",
+    "learn.tidySkipped": "Skipped: LLM tidy is switched off",
+    "learn.tidyNoModel": "Failed: no usable model (pick a model or set a default model first)",
+    "learn.resetOk": "Learning data reset",
+    "learn.resetFailed": "Reset failed: the learning database is unavailable",
     "learn.privacy": "Tidying sends the tool name, command name and directory of approval events to the selected model; nothing else leaves your machine."
 };

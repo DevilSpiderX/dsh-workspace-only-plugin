@@ -1,6 +1,6 @@
 import {useEffect, useState} from "react";
 import type {ChangeEvent, JSX, KeyboardEvent} from "react";
-import {Button, Input, Menu} from "@deepseek-ai/dsh-client-ui-primitives";
+import {Button, Input, Menu, Switch} from "@deepseek-ai/dsh-client-ui-primitives";
 import type {MenuEntry} from "@deepseek-ai/dsh-client-ui-primitives";
 import {globalEntries, SCOPE_OPTIONS} from "./shared.ts";
 import type {TranslateFn} from "./shared.ts";
@@ -114,6 +114,8 @@ export function WorkspaceOnlySection(
     const [confirmReset, setConfirmReset] = useState(false);
     const [tidyBusy, setTidyBusy] = useState(false);
     const [tidyInfo, setTidyInfo] = useState<string | null>(null);
+    const [resetInfo, setResetInfo] = useState<string | null>(null);
+    const [resetBusy, setResetBusy] = useState(false);
     const [catalog, setCatalog] = useState<unknown>(null);
     const [catalogFailed, setCatalogFailed] = useState(false);
     useEffect(() => {
@@ -134,6 +136,29 @@ export function WorkspaceOnlySection(
             alive = false;
         };
     }, [modelCatalog]);
+    /**
+     * 改学习配置（T43）：同时清掉上一次整理的结果文案。旧文案是**上一次执行
+     * 时**的快照，开关/模型一改就不再对应当前设置（用户曾看到「开关明明开着
+     * 却显示 llmAssist off」），留着只会误导。
+     */
+    const changeLearnConfig = (fields: Record<string, unknown>): void => {
+        setTidyInfo(null);
+        void setLearnConfig(fields);
+    };
+    /** 把整理摘要翻成可读文案（宿主原始词不出现在界面上，T43）。 */
+    const describeTidy = (raw: {status?: unknown; appliedCount?: unknown; detail?: unknown}): string => {
+        const status = typeof raw.status === "string" ? raw.status : "";
+        const detail = typeof raw.detail === "string" ? raw.detail : "";
+        if (status === "skipped") return t("learn.tidySkipped");
+        if (status === "failed") {
+            if (detail === "no model") return t("learn.tidyNoModel");
+            const cause = detail === "" ? t("error.remote") : detail;
+            return t("learn.tidyFailed", {detail: cause});
+        }
+        const count = typeof raw.appliedCount === "number" ? raw.appliedCount : 0;
+        if (detail === "no samples" || count === 0) return t("learn.tidyNoSamples");
+        return t("learn.tidyOk", {count});
+    };
     const tidyNow = async (): Promise<void> => {
         setTidyBusy(true);
         setTidyInfo(t("learn.tidyRunning"));
@@ -144,17 +169,30 @@ export function WorkspaceOnlySection(
                 // "管理通道不可用"，把「整理失败」误指成「通道断了」——分开叙述。
                 setTidyInfo(t("learn.tidyFailed", {detail: t("error.remote")}));
             } else {
-                const detail = typeof raw.detail === "string" && raw.detail !== "" ? ` — ${raw.detail}` : "";
-                setTidyInfo(`${String(raw.status ?? "")}${detail}`);
+                setTidyInfo(describeTidy(raw));
             }
         } finally {
             setTidyBusy(false);
         }
     };
+    /**
+     * 重置学习数据（T43）：等宿主回话再叙述结果——此前按钮点完毫无反馈，
+     * 「重置学习数据」是否生效无从判断。
+     */
+    const resetNow = async (): Promise<void> => {
+        setConfirmReset(false);
+        setResetBusy(true);
+        setResetInfo(null);
+        try {
+            const raw = await resetLearnData() as {reset?: unknown} | null | undefined;
+            setResetInfo(raw != null && typeof raw === "object" && raw.reset === true ? t("learn.resetOk") : t("learn.resetFailed"));
+        } finally {
+            setResetBusy(false);
+        }
+    };
     if (state.status === "unavailable") return null;
     const busy = state.status === "loading" || state.status === "saving";
     const enabled = state.enabled === true;
-    const label = busy ? t("loading") : (enabled ? t("on") : t("off"));
     const description = state.error ?? t("description");
     const always = state.always ?? [];
     const globals = globalEntries(always);
@@ -194,17 +232,15 @@ export function WorkspaceOnlySection(
         <div className={css.page}>
             <div className={css.pageHead}>
                 <div className={css.pageTitle}>{t("title")}</div>
-                <button
-                    type="button"
-                    className={css.toggle}
-                    aria-pressed={enabled}
+                <Switch
+                    checked={enabled}
+                    label={t("title")}
+                    title={busy ? t("loading") : undefined}
                     disabled={busy || !state.writable}
-                    onClick={() => {
-                        select(!enabled);
+                    onChange={(next) => {
+                        select(next);
                     }}
-                >
-                    {label}
-                </button>
+                />
             </div>
             <div className={css.desc} role={state.error === null ? void 0 : "alert"}>{description}</div>
             <div className={css.panel}>
@@ -385,30 +421,26 @@ export function WorkspaceOnlySection(
                     <div className={css.desc}>{t("learn.desc")}</div>
                     <div className={entryRowCss.item}>
                         <span className={entryRowCss.path}>{t("learn.autoApprove")}</span>
-                        <button
-                            type="button"
-                            className={entryRowCss.mini}
+                        <Switch
+                            checked={learn.autoApproveFromHistory}
+                            label={t("learn.autoApprove")}
                             disabled={busy || !state.writable}
-                            onClick={() => {
-                                setLearnConfig({autoApproveFromHistory: !learn.autoApproveFromHistory});
+                            onChange={(next) => {
+                                setLearnConfig({autoApproveFromHistory: next});
                             }}
-                        >
-                            {learn.autoApproveFromHistory ? t("on") : t("off")}
-                        </button>
+                        />
                     </div>
                     <div className={css.desc}>{t("learn.autoApproveDesc")}</div>
                     <div className={entryRowCss.item}>
                         <span className={entryRowCss.path}>{t("learn.assist")}</span>
-                        <button
-                            type="button"
-                            className={entryRowCss.mini}
+                        <Switch
+                            checked={learn.llmAssist}
+                            label={t("learn.assist")}
                             disabled={busy || !state.writable}
-                            onClick={() => {
-                                setLearnConfig({llmAssist: !learn.llmAssist});
+                            onChange={(next) => {
+                                changeLearnConfig({llmAssist: next});
                             }}
-                        >
-                            {learn.llmAssist ? t("on") : t("off")}
-                        </button>
+                        />
                     </div>
                     <div className={entryRowCss.item}>
                         <span className={entryRowCss.path}>{t("learn.model")}</span>
@@ -417,7 +449,7 @@ export function WorkspaceOnlySection(
                             options={modelOptions}
                             disabled={busy || !state.writable}
                             onPick={(id) => {
-                                setLearnConfig({llmModel: id, llmReasoningEffort: "default"});
+                                changeLearnConfig({llmModel: id, llmReasoningEffort: "default"});
                             }}
                         />
                     </div>
@@ -434,7 +466,7 @@ export function WorkspaceOnlySection(
                                 options={effortOptions}
                                 disabled={busy || !state.writable}
                                 onPick={(id) => {
-                                    setLearnConfig({llmReasoningEffort: id});
+                                    changeLearnConfig({llmReasoningEffort: id});
                                 }}
                             />
                         </div>
@@ -453,18 +485,17 @@ export function WorkspaceOnlySection(
                         </button>
                     </div>
                     <div className={entryRowCss.item}>
-                        <span className={entryRowCss.path}>{confirmReset ? t("learn.resetConfirm") : ""}</span>
+                        <span className={entryRowCss.path}>{confirmReset ? t("learn.resetConfirm") : (resetInfo ?? "")}</span>
                         <button
                             type="button"
                             className={entryRowCss.mini}
-                            disabled={busy}
+                            disabled={busy || resetBusy}
                             onClick={() => {
                                 if (!confirmReset) {
                                     setConfirmReset(true);
                                     return;
                                 }
-                                setConfirmReset(false);
-                                void resetLearnData();
+                                void resetNow();
                             }}
                         >
                             {t("learn.reset")}

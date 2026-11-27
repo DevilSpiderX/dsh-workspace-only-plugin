@@ -637,7 +637,11 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
     // 服务缺席时降级为可读失败而不是抛 inject 错误。详见 `llm-bridge.ts`。
     const tidyBridge = createTidyBridge(ctx);
     const tidyService = createLlmTidyService({
-        db: learnService.db,
+        // 取值函数而不是库对象：`openLearnDb` 是异步的，装配时
+        // `learnService.db` 还是 `UNAVAILABLE` 快照（「立即整理」恒定
+        // `failed — db unavailable` 的根因）。配合 ready 信号等就绪。
+        db: () => learnService.db,
+        ready: learnService.ready,
         askModel: tidyBridge.askModel,
         resolveDefaultModel: tidyBridge.resolveDefaultModel,
         onApplied: () => learnService.reload()
@@ -939,7 +943,7 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
             events: learnService.db.searchApprovals(String(query), typeof limit === "number" && Number.isFinite(limit) ? limit : 50)
         }),
         // T39：设置页「重置学习数据」——清空六表重新开始学习。
-        resetLearnData: () => ({reset: learnService.resetLearnData()}),
+        resetLearnData: () => learnService.resetLearnData().then((reset) => ({reset})),
         learnedPolicies: () => ({policies: learnService.db.policies()}),
         removeLearnedPolicy: (featureKey) => ({removed: learnService.removePolicy(String(featureKey))}),
         // T39：设置页「立即整理」——异步跑一轮 LLM 整理并返回摘要。

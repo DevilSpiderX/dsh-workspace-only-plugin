@@ -143,7 +143,9 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
 - **整理用模型**（`llmModel`）：默认「跟随当前模型」（dsh 当前选中的模型），也可下拉指定（列出 dsh 模型目录的全部模型，按 provider 分组）与推理等级（`llmReasoningEffort`）；
 - **LLM 只整理、不裁决**：模型输出只取「哪些调用属于一组」的**分组匹配规则**（工具 + 命令 glob + 目录 glob），数字与裁决字段一律无视、组计数由服务端从真实样本实算——LLM 无法通过虚报数字抬高置信；产物同样过方向锁与 deny 传染（组内有拒绝则整组否决自动通过）；每次整理落 `llm_tidy_runs` 审计（模型、prompt 摘要、结果、应用条数），失败弃用不阻塞门禁；
 - **自动整理时机**：新审批事件 ≥ 20 条或距上次整理 ≥ 24 小时自动触发（异步防抖），也可「立即整理」手动触发；
-- **重置学习数据**：二次确认后清空全部学习数据（命中事件、形态豁免、意图策略、组规则、审批事件）重新开始学习；
+- **结果文案**：面板只显示可读中文（`整理完成：写入 N 组` / `整理完成：暂无审批样本` / `已跳过：大模型整理开关关闭` / `失败：没有可用模型` / `整理失败：<原因>`），宿主的原始状态词不出现在界面上；切换开关或模型会清掉上一次的结果快照（旧文案是**上一次执行时**的状态，留着会与当前设置矛盾）；
+- **库就绪**：整理服务拿的是学习库的**取值函数**（不是装配时的对象快照）+ `ready` 信号——`learn.sqlite3` 是异步打开的，等就绪再读；库真的打不开时结果文案会带具体原因（`db unavailable: migration failed: …` / `sqlite open failed: …`），不再是笼统的 `db unavailable`；
+- **重置学习数据**：二次确认后清空全部学习数据（命中事件、形态豁免、意图策略、组规则、审批事件）重新开始学习；等库就绪再执行，按钮会如实回报「已重置 / 重置失败」；
 - **隐私提示**：整理时只把工具名、命令名、目标目录、判决发往所选模型，不含参数与文件内容。
 
 ### 审批事件记录（learn.sqlite3）
@@ -284,6 +286,8 @@ node scripts/check-compat.ts     # 对本机 dsh 安装做契约自检
 - **T39：学习层重设计**——新增 L2 审批意图学习（特征=工具|命令名|目录，样本够且零拒绝的调用自动通过、`verdict: "auto-approved"`）、LLM 自动整理学习数据（`llmAssist` 可关，`llmModel` 默认跟随当前模型）与设置页「学习与自动整理」面板（重置学习数据/立即整理/模型选择）；L1 形态豁免与安全红线不变。管理 RPC 新增 `resetLearnData`/`learnedPolicies`/`removeLearnedPolicy(featureKey)`/`runLlmTidy`/`llmTidyRuns(limit)`。
 - **T41：MSYS 盘符写法归一**——白名单写 `C:\Code`、命令里传 `/c/Code/x` 此前判成两个位置（`path.win32` 与 `path.posix` 语义各自逃逸），白名单永不命中、每次都弹卡片；现在两者互认，`/wo-allow /c/Code` 也写成 `C:\Code` 而不是另存一条互不命中的条目。`deny` 规则同样跨拼写匹配（底线规则不能因写法漏放）。多字母一级段（`/etc`、`/usr`）不映射为盘符。
 - **T42：学习面板 inject 抛错**——`llm`/`agentDefaultModel` 是可选宿主服务，旧代码用 `ctx.llm` / `ctx.agentDefaultModel` 直访问，cordis 对未 inject 的属性直接抛 `cannot get property "…" without inject`（面板红字、「立即整理」不可用）。现在改由 `src/host/llm-bridge.ts` 经 `ctx.get()` 取用（不进 `inject`——cordis 没有可选 inject，缺服务的 composition 会让整个插件不激活），服务缺席时「整理」如实报失败而不是抛 inject 错误；RPC 本身失败时前端也不再把文案误报成「管理通道不可用」。
+- **T43：`failed — db unavailable` 的根因**——整理服务在装配时把 `learnService.db` **对象快照**存进依赖，而 `learn.sqlite3` 是异步打开的（Flyway 迁移 + 建连接），装配那一刻拿到的是 `available: false` 的空实现 stub，于是「立即整理」此后永远返回 `failed — db unavailable`（库其实完好：表、迁移历史、数据都在）。现在依赖改成**取值函数** `db: () => learnService.db` + `ready` 信号（等首次打开完成，上限 10s，绝不挂住）；失败原因也不再被吞——`openLearnDb` 区分迁移失败/`migrations/` 缺失/driver 打不开，结果文案带具体原因。附带修掉：就绪前点「重置学习数据」静默失败（现在等就绪并回报结果）、界面直接显示宿主英文状态词（改本地化文案）、切换开关/模型不清旧结果快照。
+- **T44：设置页状态开关改用官方 Switch**——设置 → Workspace Only 里三处「已开启 / 已关闭」文字按钮（顶部总开关、学习面板的「自动审批」与「用大模型自动整理学习数据」）全部换成 `@deepseek-ai/dsh-client-ui-primitives` 的 `Switch`（36×20 胶囊轨道 + 16px 圆钮，选中态 `--dsw-alias-brand-primary` 蓝色、未选中 `--dsw-alias-border-l3`），视觉状态由组件自带的 `role="switch"` + `aria-checked` 驱动，禁用态 `opacity: .5`；界面上不再出现「已开启/已关闭」两个词，配置字段、写回通道与点击语义（`enabled` / `autoApproveFromHistory` / `llmAssist`）一字未改。
 - 管理 RPC 有变更（若你有脚本直调 `workspaceOnly/*`）：`setBypass(sessionId, enabled)` → `setScope(sessionId, scope)`（`scope` ∈ `workspace` / `outside-read` / `outside-write`），新增 `addGlobalAlways(dir)`，`snapshot` 的 `sessions[]` 由 `bypass: boolean` 改为 `scope: string`。
 - 管理 RPC 的 `args` 字段名（`sessionId`/`scope`/`dir`/`entry`/`requestId`/`choice`）即各方法的 wire 契约，由插件注册的 strict 调用描述符固定（此前源码签名推断的方式在压缩产物上会全部报 `args fields do not match the descriptor`）；改方法签名或调用载荷后跑 `node scripts/verify-remote-service.ts` 核对三方一致。
 
