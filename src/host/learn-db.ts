@@ -228,6 +228,12 @@ const llmTidyRuns = sqliteTable("llm_tidy_runs", {
 /** 存储面（`learn.ts` 消费；不可用 stub 与真实现同形）。id 由存储层生成（uuidv7）。 */
 export interface LearnDb {
     readonly available: boolean;
+    /**
+     * 不可用时的**具体**原因（可用时为空串）。此前失败一律降级成
+     * `UNAVAILABLE`，管理面只能显示笼统的 `db unavailable`——迁移失败、
+     * `migrations/` 缺失、`node:sqlite` 打不开全被吞成同一句话，无法定位。
+     */
+    readonly detail: string;
     recordHit(event: Omit<HitEvent, "id">): void;
     /** 审批事件：弹窗即记、不论结果（T36）。 */
     recordApproval(event: Omit<ApprovalEvent, "id">): void;
@@ -258,43 +264,55 @@ export interface LearnDb {
     close(): void;
 }
 
+/** 不可用 stub 的工厂：带具体原因（迁移/驱动/损坏各不相同，便于定位）。 */
+export function unavailableDb(detail: string): LearnDb {
+    return {
+        available: false,
+        detail,
+        recordHit: () => {
+        },
+        recordApproval: () => {
+        },
+        features: () => [],
+        writeFeature: () => {
+        },
+        removeFeature: () => false,
+        search: () => [],
+        searchApprovals: () => [],
+        policies: () => [],
+        writePolicy: () => {
+        },
+        removePolicy: () => false,
+        groupRules: () => [],
+        writeGroupRule: () => {
+        },
+        removeGroupRule: () => false,
+        recordTidyRun: () => {
+        },
+        tidyRuns: () => [],
+        resetAll: () => {
+        },
+        prune: () => {
+        },
+        close: () => {
+        }
+    };
+}
+
 /** 不可用 stub：一切操作静默成功/空集 —— 学习不持久，门禁不受影响。 */
-export const UNAVAILABLE: LearnDb = {
-    available: false,
-    recordHit: () => {
-    },
-    recordApproval: () => {
-    },
-    features: () => [],
-    writeFeature: () => {
-    },
-    removeFeature: () => false,
-    search: () => [],
-    searchApprovals: () => [],
-    policies: () => [],
-    writePolicy: () => {
-    },
-    removePolicy: () => false,
-    groupRules: () => [],
-    writeGroupRule: () => {
-    },
-    removeGroupRule: () => false,
-    recordTidyRun: () => {
-    },
-    tidyRuns: () => [],
-    resetAll: () => {
-    },
-    prune: () => {
-    },
-    close: () => {
-    }
-};
+export const UNAVAILABLE: LearnDb = unavailableDb("database unavailable");
 
 /** `node:sqlite` 的 `DatabaseSync` 最小形状（PRAGMA/DDL 面，按用到的收窄）。 */
 interface RawSqlite {
     exec(sql: string): void;
     prepare(sql: string): {get(...params: Array<unknown>): Record<string, unknown> | undefined};
     close(): void;
+}
+
+/** 错误原因的单行摘要（诊断用；不含堆栈、不泄露数据）。 */
+function errorMessageOf(error: unknown): string {
+    const message = error instanceof Error ? error.message : String(error);
+    return message.replace(/\s+/g, " ").trim().slice(0, 300) || "unknown error";
 }
 
 /**
@@ -324,13 +342,13 @@ export async function openLearnDb(path: string): Promise<LearnDb> {
     // 1) 迁移（独立连接，跑完即关，与下方查询连接串行）。
     try {
         const directory = migrationsDir();
-        if (directory === void 0) return UNAVAILABLE;
+        if (directory === void 0) return unavailableDb("migrations directory not found");
         const migrator = new Migrator({driver: "sqlite", database: path, directory, table: "_migrations"});
         await migrator.connect();
         await migrator.up();
         await migrator.disconnect();
-    } catch {
-        return UNAVAILABLE;
+    } catch (error) {
+        return unavailableDb(`migration failed: ${errorMessageOf(error)}`);
     }
     // 2) 查询连接（Drizzle + node:sqlite；失败=UNAVAILABLE）。
     let raw: RawSqlite | undefined;
@@ -339,18 +357,19 @@ export async function openLearnDb(path: string): Promise<LearnDb> {
         const sqlite = nodeRequire("node:sqlite") as {DatabaseSync: new (path: string) => RawSqlite};
         raw = new sqlite.DatabaseSync(path);
         raw.exec("PRAGMA journal_mode = WAL;");
-    } catch {
+    } catch (error) {
         try {
             raw?.close();
         } catch {
             // 关闭失败无所谓，直接走降级。
         }
-        return UNAVAILABLE;
+        return unavailableDb(`sqlite open failed: ${errorMessageOf(error)}`);
     }
     const client = raw;
     const db = drizzle({client: client as never});
     return {
         available: true,
+        detail: "",
         recordHit(event) {
             try {
                 db.insert(hitEvents).values({
