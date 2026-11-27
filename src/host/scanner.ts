@@ -59,6 +59,34 @@ const DOTDOT_SEGMENT = /\.\.[\\/]/;
 const WINDOWS_SHAPE = (value: string): boolean => DRIVE_ABSOLUTE.test(value) || UNC_ABSOLUTE.test(value) || value.includes("\\");
 
 /**
+ * MSYS/Cygwin 盘符写法（任务 T41）：`/c/Code`、`/cygdrive/c/Code` —— 单字母
+ * 段后必须结束或接 `/`。Git for Windows 的 bash 把 `C:\Code` 呈现成 `/c/Code`，
+ * 与白名单里的盘符写法是**同一位置的两种拼写**，必须能互相命中（否则白名单
+ * 永不生效、每次都弹卡片）。
+ *
+ * 只有**单字母**一级段才算盘符：`/etc`、`/usr` 这类多字母段保持 POSIX 语义
+ * （Git for Windows 把 `C:\Program Files` 呈现为 `/c/Program Files`，`/etc`
+ * 则是 MSYS 自己的 POSIX 根，两者不可混）。
+ */
+const MSYS_DRIVE = /^\/(?:cygdrive\/)?([A-Za-z])(?=\/|$)/i;
+
+/**
+ * 把 MSYS 盘符写法归一为盘符写法（`/c/Code/x` → `C:\Code\x`，`/cygdrive/c/x`
+ * 同理，裸 `/c` → `C:\`）。非 MSYS 形态原样返回。
+ *
+ * **调用方必须自行判定上下文**（宿主是 Windows、或对侧是盘符形态）：在真正的
+ * POSIX 主机上 `/c/Code` 是根下的 `c` 目录，归一会把它错误地折叠成盘符根。
+ * 因此本函数是纯的、不含平台判断，闸门放在调用点。
+ */
+export function toWindowsSpelling(value: string): string {
+    const match = MSYS_DRIVE.exec(value);
+    if (match === null) return value;
+    const drive = (match[1] ?? "").toUpperCase();
+    const rest = value.slice(match[0].length).replace(/\//g, "\\");
+    return rest === "" ? `${drive}:\\` : `${drive}:${rest}`;
+}
+
+/**
  * 扫描器在判定前会展开的家目录写法（任务 T3）：POSIX 的 `~` 与
  * `$HOME`/`${HOME}`，cmd 的 `%USERPROFILE%`/`%HOMEPATH%`，以及 PowerShell 的
  * `$env:USERPROFILE`/`$env:HOMEPATH`。写法必须到此结束或后接分隔符，
@@ -147,15 +175,23 @@ function pathModuleFor(target: string, root?: string): PathModule {
  * 词法包含：`target` 相对 `root` 解析后不得逃逸出去。
  * Windows 形态的输入在 `path.win32` 下大小写不敏感比较；POSIX 输入无论宿主平台
  * 如何都保持 `path.posix` 语义。
+ *
+ * 任务 T41：一侧是盘符/UNC 形态、另一侧是 MSYS 盘符写法（`/c/Code`）时，先把
+ * MSYS 那侧归一为盘符写法再比较 —— 两者是同一位置的两种拼写，否则白名单里写
+ * `C:\Code`、bash 里传 `/c/Code/x` 就永远不命中（每次都弹卡片）。**两侧都不是
+ * Windows 形态时不做任何归一**：POSIX 主机上的 `/c/Code` 是根下的 `c` 目录。
  */
 export function lexicallyWithin(target: string, root: string): boolean {
     if (target === "") return true;
     // 家目录展开永远解析不到工作区 root 内部。
     if (HOME_PREFIX.test(target)) return false;
-    const mod = pathModuleFor(target, root);
+    const windowsContext = WINDOWS_SHAPE(target) || WINDOWS_SHAPE(root);
+    const subject = windowsContext && !WINDOWS_SHAPE(target) ? toWindowsSpelling(target) : target;
+    const base = windowsContext && !WINDOWS_SHAPE(root) ? toWindowsSpelling(root) : root;
+    const mod = pathModuleFor(subject, base);
     const fold = (value: string): string => (mod === win32 ? value.toLowerCase() : value);
-    const abs = mod.isAbsolute(target) ? target : mod.join(root, target);
-    const rel = mod.relative(fold(mod.normalize(root)), fold(mod.normalize(abs)));
+    const abs = mod.isAbsolute(subject) ? subject : mod.join(base, subject);
+    const rel = mod.relative(fold(mod.normalize(base)), fold(mod.normalize(abs)));
     return rel === "" || (rel !== ".." && !rel.startsWith(`..${mod.sep}`) && !mod.isAbsolute(rel));
 }
 
@@ -528,14 +564,20 @@ export function outsideReason(exec: ToolCall, root: string): string | undefined 
 /**
  * 白名单条目应对一次违规路径覆盖的目录：类文件目标取其父目录，本身读起来已是
  * 目录的（以 `/` 或 `\` 结尾）取路径本身。
+ *
+ * 任务 T41：`windowsHost`（默认按宿主平台）为真时，MSYS 盘符写法先归一为盘符
+ * 写法 —— 否则 `/c/Code/internal/a.txt` 会被 `posix.dirname` 推成
+ * `/c/Code/internal`，而白名单里存的是 `C:\Code`，两者永远匹配不上（弹窗卡片
+ * 上显示的目录也正是这个 POSIX 拼写）。POSIX 宿主上不归一。
  */
-export function directoryOf(target: string): string {
+export function directoryOf(target: string, windowsHost: boolean = process.platform === "win32"): string {
     if (target === "") return target;
     if (HOME_PREFIX.test(target)) return target;
-    const mod = WINDOWS_SHAPE(target) ? win32 : posix;
-    if (target.endsWith("/") || target.endsWith("\\")) return mod.normalize(target);
-    const dir = mod.dirname(mod.normalize(target));
-    return dir === "." ? target : dir;
+    const value = windowsHost ? toWindowsSpelling(target) : target;
+    const mod = WINDOWS_SHAPE(value) ? win32 : posix;
+    if (value.endsWith("/") || value.endsWith("\\")) return mod.normalize(value);
+    const dir = mod.dirname(mod.normalize(value));
+    return dir === "." ? value : dir;
 }
 
 /**
@@ -551,10 +593,13 @@ export function directoryOf(target: string): string {
  */
 export function isPlatformTempTarget(value: unknown, tempRoot: string = tmpdir()): boolean {
     if (typeof value !== "string" || value === "") return false;
-    const mod = pathModuleFor(value, tempRoot);
-    if (!mod.isAbsolute(value)) return false;
+    // 任务 T41：临时根是盘符形态而值是 MSYS 写法时先归一，否则 bash 里引用
+    // `/c/Users/…/Temp/dsh-spill-x` 会被当成工作区外的真实路径而弹窗。
+    const subject = WINDOWS_SHAPE(tempRoot) ? toWindowsSpelling(value) : value;
+    const mod = pathModuleFor(subject, tempRoot);
+    if (!mod.isAbsolute(subject)) return false;
     const fold = (v: string): string => (mod === win32 ? v.toLowerCase() : v);
-    const rel = mod.relative(fold(mod.normalize(tempRoot)), fold(mod.normalize(value)));
+    const rel = mod.relative(fold(mod.normalize(tempRoot)), fold(mod.normalize(subject)));
     if (rel === "" || rel === ".." || rel.startsWith(`..${mod.sep}`) || mod.isAbsolute(rel)) return false;
     const first = rel.split(/[\\/]/)[0] ?? "";
     return first.startsWith("dsh-") || first.startsWith(".dsh-");
@@ -621,10 +666,15 @@ export function denyMatch(value: unknown, denyList: readonly string[] | undefine
     const resolved = expandHomeSpelling(value) ?? value;
     for (const entry of denyList ?? []) {
         if (typeof entry !== "string" || entry === "") continue;
+        const rule = expandHomeSpelling(entry) ?? entry;
         if (entry.endsWith("/") || entry.endsWith("\\")) {
-            if (lexicallyWithin(resolved, expandHomeSpelling(entry) ?? entry)) return entry;
-        } else if (globToRegExp(entry).test(resolved)) {
-            return entry;
+            if (lexicallyWithin(resolved, rule)) return entry;
+        } else {
+            // 任务 T41：glob 分支同样要能跨拼写匹配（deny 里写 `C:\secret\*.pem`、
+            // 命令里传 `/c/secret/a.pem` 必须命中）—— 底线规则绝不能因写法不同而
+            // 漏放。
+            const subject = WINDOWS_SHAPE(rule) && !WINDOWS_SHAPE(resolved) ? toWindowsSpelling(resolved) : resolved;
+            if (globToRegExp(rule).test(subject)) return entry;
         }
     }
     return void 0;

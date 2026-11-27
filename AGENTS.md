@@ -20,7 +20,7 @@ node tmp/smoke/run.mjs            # 端到端 smoke（stub dsh 包 + 真 schemas
 
 - 改 `src/host/scanner.ts` 或 shell 扫描行为 → 必跑 `verify-scanner.ts`，新用例加进它的 `cases` 数组。
 - 改 `src/host/**` 纯函数语义 → 跑 `pnpm test`（node:test 单点测试）。**tests/ 与 verify-\* 分工**：`tests/` 是函数级单点断言（快速、可 `--test-name-pattern` 单跑），`scripts/verify-*.ts` 是命令/集成级契约看守（AGENTS 各条目钉的"必跑"不变）——两层用例都补，别只补一边。
-- 改 `src/host/allow-command.ts`（`/wo-allow` 目录解析）→ 必跑 `verify-allow-command.ts`，新用例加进它的 `cases` 数组。
+- 改 `src/host/allow-command.ts`（`/wo-allow` 目录解析）→ 必跑 `verify-allow-command.ts`，新用例加进它的 `cases` 数组（用例显式带平台形参 `win32`/`linux`，别依赖跑测机器的 `process.platform`）。
 - 改 `src/host/learn.ts` / `learn-db.ts` / `shell-syntax.ts`（无感学习层与语法分析层）→ 必跑 `verify-learn.ts` 与 `verify-scanner.ts`；学习豁免的**方向锁**（只降误判、用户拒绝即回撤、硬路径特征不可学、损坏即停学）是安全契约，回归必须全绿。
 - 改 `src/host/session-cleanup.ts`（孤儿会话白名单目录清理）→ 必跑 `verify-session-cleanup.ts`，新用例加进它的检查序列。
 - 改 Remote 方法签名、`REMOTE_WIRES` 或客户端 `call()` 载荷 → 必跑 `verify-remote-service.ts`（先 `pnpm build`）；三方漂移的后果见「Remote 方法的 wire 字段名是三方契约」条。

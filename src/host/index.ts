@@ -15,6 +15,7 @@ import {
     resolveDshHome,
     scanTargets,
     sensitiveMatch,
+    toWindowsSpelling,
     toolAccessKind
 } from "./scanner.ts";
 import type {PathEntry, SensitiveConfig, SensitiveHit} from "./scanner.ts";
@@ -272,9 +273,14 @@ function canonicalizeBestEffort(target: string): string | undefined {
  * 如 macOS 的 `/tmp` -> `/private/tmp`），最终包含判定复用 `lexicallyWithin`，
  * 这样 win32 的大小写/盘符/UNC 语义成立，磁盘上的大小写差异无关紧要。
  * 任何解析失败都算外部（fail-closed）。
+ *
+ * 任务 T41：Windows 宿主上先把 MSYS 盘符写法（`/c/Code/x`）归一为盘符写法 ——
+ * 宿主的 `path.resolve`/`realpathSync` 会把 `/c/...` 解析到**当前盘根**下的
+ * `c` 目录（`D:\c\Code\x`），逐级上溯后必然被判成工作区外。
  */
 function escapesViaRealpath(target: string, root: string): boolean {
-    const abs = isAbsolute(target) ? target : resolve(root, target);
+    const value = process.platform === "win32" ? toWindowsSpelling(target) : target;
+    const abs = isAbsolute(value) ? value : resolve(root, value);
     const realTarget = canonicalizeBestEffort(abs);
     const realRoot = canonicalizeBestEffort(root);
     if (realTarget === void 0 || realRoot === void 0) return true;
