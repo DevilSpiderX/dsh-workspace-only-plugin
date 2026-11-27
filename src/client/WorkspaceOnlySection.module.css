@@ -39,30 +39,6 @@
     line-height: 18px;
 }
 
-.toggle {
-    border-radius: var(--dsw-radius-md);
-    background: var(--dsw-alias-bg-module-platform);
-    height: 36px;
-    font: inherit;
-    color: var(--dsw-alias-label-primary);
-    cursor: pointer;
-    border: none;
-    align-items: center;
-    gap: 12px;
-    padding: 0 14px;
-    font-size: 14px;
-    line-height: 22px;
-    display: inline-flex;
-}
-
-.toggle:hover:not(:disabled) {
-    background: var(--dsw-alias-interactive-bg-hover);
-}
-
-.toggle:disabled {
-    cursor: default;
-}
-
 .panel {
     flex-direction: column;
     gap: 10px;

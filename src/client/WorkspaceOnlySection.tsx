@@ -1,6 +1,6 @@
 import {useEffect, useState} from "react";
 import type {ChangeEvent, JSX, KeyboardEvent} from "react";
-import {Button, Input, Menu} from "@deepseek-ai/dsh-client-ui-primitives";
+import {Button, Input, Menu, Switch} from "@deepseek-ai/dsh-client-ui-primitives";
 import type {MenuEntry} from "@deepseek-ai/dsh-client-ui-primitives";
 import {globalEntries, SCOPE_OPTIONS} from "./shared.ts";
 import type {TranslateFn} from "./shared.ts";
@@ -193,7 +193,6 @@ export function WorkspaceOnlySection(
     if (state.status === "unavailable") return null;
     const busy = state.status === "loading" || state.status === "saving";
     const enabled = state.enabled === true;
-    const label = busy ? t("loading") : (enabled ? t("on") : t("off"));
     const description = state.error ?? t("description");
     const always = state.always ?? [];
     const globals = globalEntries(always);
@@ -233,17 +232,15 @@ export function WorkspaceOnlySection(
         <div className={css.page}>
             <div className={css.pageHead}>
                 <div className={css.pageTitle}>{t("title")}</div>
-                <button
-                    type="button"
-                    className={css.toggle}
-                    aria-pressed={enabled}
+                <Switch
+                    checked={enabled}
+                    label={t("title")}
+                    title={busy ? t("loading") : undefined}
                     disabled={busy || !state.writable}
-                    onClick={() => {
-                        select(!enabled);
+                    onChange={(next) => {
+                        select(next);
                     }}
-                >
-                    {label}
-                </button>
+                />
             </div>
             <div className={css.desc} role={state.error === null ? void 0 : "alert"}>{description}</div>
             <div className={css.panel}>
@@ -424,30 +421,26 @@ export function WorkspaceOnlySection(
                     <div className={css.desc}>{t("learn.desc")}</div>
                     <div className={entryRowCss.item}>
                         <span className={entryRowCss.path}>{t("learn.autoApprove")}</span>
-                        <button
-                            type="button"
-                            className={entryRowCss.mini}
+                        <Switch
+                            checked={learn.autoApproveFromHistory}
+                            label={t("learn.autoApprove")}
                             disabled={busy || !state.writable}
-                            onClick={() => {
-                                setLearnConfig({autoApproveFromHistory: !learn.autoApproveFromHistory});
+                            onChange={(next) => {
+                                setLearnConfig({autoApproveFromHistory: next});
                             }}
-                        >
-                            {learn.autoApproveFromHistory ? t("on") : t("off")}
-                        </button>
+                        />
                     </div>
                     <div className={css.desc}>{t("learn.autoApproveDesc")}</div>
                     <div className={entryRowCss.item}>
                         <span className={entryRowCss.path}>{t("learn.assist")}</span>
-                        <button
-                            type="button"
-                            className={entryRowCss.mini}
+                        <Switch
+                            checked={learn.llmAssist}
+                            label={t("learn.assist")}
                             disabled={busy || !state.writable}
-                            onClick={() => {
-                                changeLearnConfig({llmAssist: !learn.llmAssist});
+                            onChange={(next) => {
+                                changeLearnConfig({llmAssist: next});
                             }}
-                        >
-                            {learn.llmAssist ? t("on") : t("off")}
-                        </button>
+                        />
                     </div>
                     <div className={entryRowCss.item}>
                         <span className={entryRowCss.path}>{t("learn.model")}</span>
