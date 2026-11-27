@@ -10,6 +10,7 @@ import {join} from "node:path";
 import {
     builtinAlwaysDirs,
     denyMatch,
+    directoryOf,
     expandHomeSpelling,
     genericTargets,
     isPlatformTempTarget,
@@ -126,7 +127,18 @@ const cases: [string, string, string, ShellDialect?][] = [
     ["awk '/x/ /etc/y'", "FLAG", winRoot],
     ["awk '/^//' /etc/y", "FLAG", winRoot],
     ["grep '//x' /etc/z", "FLAG", winRoot],
-    ["echo $((1+2))", "OK", winRoot]
+    ["echo $((1+2))", "OK", winRoot],
+    // --- T41 改善组：Git for Windows 的 bash 把 `C:\work\project` 呈现为
+    // `/c/work/project`；白名单里存盘符写法必须照样命中（此前每次都弹卡片）---
+    ["cat /c/work/project/src/a.txt", "OK", winRoot],
+    ["cd /c/work/project/src && ls", "OK", winRoot],
+    ["cat /cygdrive/c/work/project/src/a.txt", "OK", winRoot],
+    ["cat /c/work/PROJECT/src/a.txt", "OK", winRoot],
+    // --- T41 回归组：跨盘符、其他盘根、逃逸仍是外部 ---
+    ["cat /c/tmp/example.txt", "FLAG", winRoot],
+    ["cat /d/work/project/src/a.txt", "FLAG", winRoot],
+    ["cat /c/work/project/../../secrets.txt", "FLAG", winRoot],
+    ["cat /etc/passwd", "FLAG", winRoot]
 ];
 
 /**
@@ -142,7 +154,19 @@ const containment: [string, string, boolean][] = [
     ["/etc/passwd", posixRoot, false],
     ["src/x", posixRoot, true],
     ["../x", posixRoot, false],
-    ["~/x", posixRoot, false]
+    ["~/x", posixRoot, false],
+    // T41：MSYS 盘符写法与盘符写法互认（Git for Windows 的 bash 里
+    // 白名单 `C:\Code` 必须覆盖 `/c/Code/...`，否则每次访问都弹卡片）。
+    ["/c/Code/internal/business-platform-server-wt1", "C:\\Code", true],
+    ["/c/Code/internal/a.txt", "c:\\code", true],
+    ["/cygdrive/c/Code/x", "C:\\Code", true],
+    ["C:\\Code\\internal\\a.txt", "/c/Code", true],
+    ["/c/Other/x", "C:\\Code", false],
+    ["/d/Code/x", "C:\\Code", false],
+    ["/c/Code/../Other/x", "C:\\Code", false],
+    // 两侧都不是盘符形态：POSIX 语义原样保持（`/c` 是根下的 c 目录）。
+    ["/c/Code/x", "/c", true],
+    ["/c/Code/x", "/home/me", false]
 ];
 
 /**
@@ -161,6 +185,10 @@ const tempExempt: [string, string, boolean][] = [
     ["c:\\users\\me\\appdata\\local\\temp\\DSH-Subprocess-X\\a.log", tempRootWin, true],
     ["/tmp/dsh-shell-Ab12Cd/out.txt", "/tmp", true],
     ["/tmp/.dsh-mkdir-staging/x", "/tmp", true],
+    // T41：临时根是盘符形态、值是 MSYS 写法（bash 的 $TMPDIR 呈现）同样豁免。
+    ["/c/Users/me/AppData/Local/Temp/dsh-spill-A1b2C3/x.json", tempRootWin, true],
+    ["/c/Users/me/AppData/Local/Temp/notes.txt", tempRootWin, false],
+    ["/d/Users/me/AppData/Local/Temp/dsh-x/a.log", tempRootWin, false],
     // 不豁免：普通文件与根本身仍受门禁。
     ["C:\\Users\\me\\AppData\\Local\\Temp\\notes.txt", tempRootWin, false],
     ["C:\\Users\\me\\AppData\\Local\\Temp", tempRootWin, false],
@@ -243,6 +271,12 @@ const denyCases: [string, string[], string | undefined][] = [
     ["C:\\work\\project\\x.pem", ["*.pem"], "*.pem"],
     ["/home/me/secrets/id_rsa", ["*/secrets/*"], "*/secrets/*"],
     ["~/secret/a.txt", ["~/secret/"], "~/secret/"],
+    // T41：deny 是绝不放行的底线规则，必须跨拼写命中（deny 写盘符、
+    // 命令用 Git Bash 的 `/c/...` 写法时不能漏放）。
+    ["/c/secret/a.txt", ["C:\\secret\\"], "C:\\secret\\"],
+    ["/c/secret/a.pem", ["C:\\secret\\*.pem"], "C:\\secret\\*.pem"],
+    ["/c/other/a.pem", ["C:\\secret\\*.pem"], void 0],
+    ["/d/secret/a.txt", ["C:\\secret\\"], void 0],
     ["C:\\work\\project\\a.txt", [], void 0],
     ["C:\\work\\project\\a.txt", [""], void 0]
 ];
@@ -443,6 +477,22 @@ for (const [value, tempRoot, expectExempt] of tempExempt) {
     const ok = exempt === expectExempt;
     if (ok) pass += 1;
     console.log(`${ok ? "PASS" : "FAIL"}  temp-exempt ${JSON.stringify(value)} in ${JSON.stringify(tempRoot)} => ${exempt ? "exempt" : "gated"}`);
+}
+// T41：白名单目录推导跨拼写 —— Windows 宿主上 `/c/Code/a.txt` 必须推导成
+// `C:\Code`（卡片显示与白名单条目同拼写，否则两者的 key 永远对不上）。
+for (const [target, windowsHost, expected] of [
+    ["/c/Code/internal/business-platform-server-wt1", true, "C:\\Code\\internal"],
+    ["/c/Code/internal/a.txt", true, "C:\\Code\\internal"],
+    ["/c/Code/internal/", true, "C:\\Code\\internal\\"],
+    ["C:\\tmp\\a.txt", true, "C:\\tmp"],
+    ["/c/Code/internal/a.txt", false, "/c/Code/internal"],
+    ["/home/me/a.txt", false, "/home/me"]
+] as [string, boolean, string][]) {
+    total += 1;
+    const got = directoryOf(target, windowsHost);
+    const ok = got === expected;
+    if (ok) pass += 1;
+    console.log(`${ok ? "PASS" : "FAIL"}  directory-of ${JSON.stringify(target)} (windowsHost=${windowsHost}) => ${JSON.stringify(got)}`);
 }
 {
     // pathReason 对工作区内安全路径保持静默，对 home/逃逸路径报警。
