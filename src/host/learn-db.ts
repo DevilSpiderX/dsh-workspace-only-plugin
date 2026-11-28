@@ -72,6 +72,13 @@ export interface ApprovalEvent {
     readonly at: number;
     readonly tool: string;
     readonly command: string;
+    /**
+     * 该命令的归一命令名（T45）：与 L2 特征键 K1 的 `command_name` **同源**
+     * （取自五段形态签名第 2 段，basename + pwsh 小写）。旧实现让 LLM 整理
+     * 自己从 `command` 里截首词，pwsh 脚本会截出 `$javap` / `&` / `[xml]$s`
+     * 这类碎片，归纳出的组规则与真实特征键永远对不上。历史行为 NULL。
+     */
+    readonly commandName: string;
     readonly dir: string;
     readonly reason: string;
     /** 本次 ask 的全部命中目标（JSON 数组文本，截断存储）。 */
@@ -177,6 +184,7 @@ const approvalEvents = sqliteTable("approval_events", {
     at: integer("at").notNull(),
     tool: text("tool").notNull(),
     command: text("command"),
+    commandName: text("command_name"),
     dir: text("dir").notNull(),
     reason: text("reason"),
     targets: text("targets"),
@@ -398,6 +406,7 @@ export async function openLearnDb(path: string): Promise<LearnDb> {
                     at: event.at,
                     tool: event.tool,
                     command: event.command.slice(0, 4096),
+                    commandName: event.commandName.slice(0, 256) || null,
                     dir: event.dir,
                     reason: event.reason.slice(0, 2048),
                     targets: event.targets.slice(0, 4096),
@@ -498,6 +507,7 @@ export async function openLearnDb(path: string): Promise<LearnDb> {
                         at: row.at,
                         tool: row.tool,
                         command: row.command ?? "",
+                        commandName: row.commandName ?? "",
                         dir: row.dir,
                         reason: row.reason ?? "",
                         targets: row.targets ?? "[]",

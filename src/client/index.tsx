@@ -113,6 +113,7 @@ function apply(ctx: ClientContext): void {
         setLearnConfig: (fields: Record<string, unknown>) => controller.setLearnConfig(fields),
         resetLearnData: () => controller.resetLearnData(),
         runLlmTidy: () => controller.runLlmTidy(),
+        removeLlmGroupRule: (id: string) => controller.removeLlmGroupRule(id),
         modelCatalog
     });
     ctx.effect(() => ctx.locale.register("settings.workspaceOnly", {

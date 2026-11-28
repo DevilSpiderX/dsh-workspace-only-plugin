@@ -102,12 +102,32 @@ function isSafePattern(value: string): boolean {
     return value.length <= TIDY_MAX_PATTERN && /^[\x20-\x7E]*$/.test(value);
 }
 
+/** 纯通配段（含空串）：该维度不设任何约束，等于放弃维度。 */
+function isPureWildcard(value: string): boolean {
+    return /^[\s*?]*$/.test(value);
+}
+
 /**
  * 解析并严格校验 LLM 输出。只提取 `groups[].{tool,command,dir}` 三段
- * glob（缺省=空串"不限"）；数字/计数字段**一律无视**（服务端实算）。
- * 任何结构问题返回 undefined（整体弃用，fail-safe）。
+ * glob；数字/计数字段**一律无视**（服务端实算）。
+ *
+ * 两级处理（T45）——旧实现只管字符集，于是「19 组 dir 全是 `*`」照样落库：
+ * - **整轮弃用**（返回 undefined）：JSON 非法 / 非对象 / `groups` 非数组 /
+ *   空数组 / 超过 {@link TIDY_MAX_GROUPS}——结构性错误视为模型没按格式答。
+ * - **逐组丢弃**（计入 `dropped`）：单条非对象、段超长或含不可见字符、
+ *   `tool`/`dir` 为空或纯通配（跨工具/跨目录的规则等于放弃维度，且会把
+ *   互不相关的 deny 传染到一起）、`command` 为纯通配。
+ *
+ * `dir` 是安全关键维度：**必须有具体值**。非 shell 工具的 `command` 允许为空
+ * （那是「该工具没有命令名」的合法维度缺失）。
  */
-export function parseTidyOutput(text: string): GroupMatcher[] | undefined {
+export interface TidyParseResult {
+    readonly matchers: GroupMatcher[];
+    /** 被逐组丢弃的条数（审计用：模型输出质量的可观测面）。 */
+    readonly dropped: number;
+}
+
+export function parseTidyOutput(text: string): TidyParseResult | undefined {
     let parsed: unknown;
     try {
         parsed = JSON.parse(text);
@@ -118,18 +138,41 @@ export function parseTidyOutput(text: string): GroupMatcher[] | undefined {
     const groups = (parsed as {groups?: unknown}).groups;
     if (!Array.isArray(groups) || groups.length === 0 || groups.length > TIDY_MAX_GROUPS) return void 0;
     const matchers: GroupMatcher[] = [];
+    let dropped = 0;
     for (const entry of groups) {
-        if (typeof entry !== "object" || entry === null) return void 0;
+        if (typeof entry !== "object" || entry === null) {
+            dropped += 1;
+            continue;
+        }
         const raw = entry as Record<string, unknown>;
-        const tool = typeof raw.tool === "string" ? raw.tool : "";
-        const command = typeof raw.command === "string" ? raw.command : "";
-        const dir = typeof raw.dir === "string" ? raw.dir : "";
+        const tool = (typeof raw.tool === "string" ? raw.tool : "").trim();
+        const command = (typeof raw.command === "string" ? raw.command : "").trim();
+        const dir = (typeof raw.dir === "string" ? raw.dir : "").trim();
+        if (!isSafePattern(tool) || !isSafePattern(command) || !isSafePattern(dir)) {
+            dropped += 1;
+            continue;
+        }
         // 三段全空=匹配一切，是废规则（而且会把所有 deny 传染到一起）。
-        if (tool === "" && command === "" && dir === "") return void 0;
-        if (!isSafePattern(tool) || !isSafePattern(command) || !isSafePattern(dir)) return void 0;
+        if (tool === "" && command === "" && dir === "") {
+            dropped += 1;
+            continue;
+        }
+        // tool 与 dir 必须具体：纯通配的组会把不相关的工具/目录并成一类。
+        if (tool === "" || isPureWildcard(tool)) {
+            dropped += 1;
+            continue;
+        }
+        if (dir === "" || isPureWildcard(dir)) {
+            dropped += 1;
+            continue;
+        }
+        if (isPureWildcard(command)) {
+            dropped += 1;
+            continue;
+        }
         matchers.push({tool, command, dir});
     }
-    return matchers;
+    return {matchers, dropped};
 }
 
 /** 审批事件的隐私最小化投影：只保留工具/命令名/目录/判决四类标签值。 */
@@ -140,14 +183,58 @@ export interface TidySample {
     readonly verdict: string;
 }
 
+/** pwsh 语句关键字：脚本首词命中这些说明首词不是命令名。 */
+const SCRIPT_KEYWORDS: ReadonlySet<string> = new Set([
+    "if", "elseif", "else", "foreach", "for", "while", "do", "switch", "try", "catch",
+    "finally", "function", "filter", "param", "return", "throw", "begin", "process",
+    "end", "trap", "class", "enum", "using", "break", "continue"
+]);
+
 /**
- * 命令名近似：取命令文本首词（`approval_events` 只存命令全文；LLM 归并
- * 以命令名为粒度，与 `PolicyInput.commandName` 对齐）。
+ * 命令名近似（**仅历史数据的回落**）：T45 起 `approval_events.command_name`
+ * 落库时就用 K1 同源值（五段形态签名第 2 段），只有迁移前的历史行为 NULL
+ * 才需要这里推断。
+ *
+ * 旧实现直接取命令全文首词，pwsh 脚本于是被截成 `$javap`、`&`、`[xml]$s`、
+ * `$env:MYSQL_PWD='hello123!';` 这类碎片，模型据此归纳出的组规则与真实特征键
+ * 永远对不上。现在遇到碎片**返回空串**（不可知）——空命令名在 matcher 里
+ * 是合法的维度缺失，比一个错的命令名安全得多。
  */
 export function commandNameOf(command: string): string {
     const trimmed = command.trim();
+    if (trimmed === "") return "";
     const space = trimmed.search(/\s/);
-    return (space < 0 ? trimmed : trimmed.slice(0, space)).toLowerCase();
+    const head = space < 0 ? trimmed : trimmed.slice(0, space);
+    // 变量/子表达式/调用运算符/类型转换/脚本块：首词不是命令名。
+    if (/^[$&\[({@#]/.test(head)) return "";
+    // 赋值语句（`$env:X='v';`、`FOO=bar`）。
+    if (head.includes("=")) return "";
+    // 只允许可执行文件名/相对路径的字符集（含 `\` `/` `:` `.` `-` `_`）。
+    if (!/^[A-Za-z0-9_./\\:-]+$/.test(head)) return "";
+    if (SCRIPT_KEYWORDS.has(head.toLowerCase())) return "";
+    return head.toLowerCase();
+}
+
+/**
+ * 目录合法性（T45）：`approval_events.dir` 由**扫描器**的命中目标算出，而
+ * 扫描器为了 fail-closed 会把模式串/正则片段也当路径候选（`\\target\\`、
+ * `/fire/|"/law/|fire/api/v1|law/api/v1`）。这些值一旦进了 prompt，模型就会
+ * 拿它当"目录"归纳，组规则从源头就被污染。这里按形态判定：必须是绝对路径
+ * （盘符 / UNC / POSIX 绝对 / 家目录），且不含通配符与引号竖线等模式串特征。
+ */
+export function looksLikeDir(value: string): boolean {
+    const trimmed = value.trim();
+    if (trimmed === "" || trimmed.length > TIDY_MAX_PATTERN) return false;
+    // 模式串/命令片段特征：通配符、引号、竖线、管道、换行（`dir` 是单一路径）。
+    if (/[*?"'|&<>\r\n\t]/.test(trimmed)) return false;
+    // 盘符绝对路径：`C:\` / `C:/`
+    if (/^[A-Za-z]:[\\/]/.test(trimmed)) return true;
+    // UNC：`\\server\share`（结尾的双反斜杠是转义残留、不是真 UNC）。
+    if (/^\\\\/.test(trimmed)) return !/\\$/.test(trimmed);
+    // POSIX 绝对路径（含 MSYS 风格 `/c/Users/...`）与家目录写法。
+    if (trimmed.startsWith("/")) return true;
+    if (trimmed.startsWith("~/") || trimmed.startsWith("~\\")) return true;
+    return false;
 }
 
 /** 构建整理 prompt（system + user 两段；样本只含四类标签值）。 */
@@ -155,11 +242,17 @@ export function buildTidyPrompt(samples: readonly TidySample[]): {system: string
     const system = [
         "你是学习数据整理器。下面是文件访问审批的样本（工具|命令名|目录|判决）。",
         "请把'语义上属于同一类访问意图'的样本归并成分组规则，供统计聚合。",
-        "每组给出 glob 匹配条件（* 匹配任意串、? 匹配单字符；空串表示该维度不限）。",
+        "每组给出 glob 匹配条件：* 匹配任意串、? 匹配单字符；`-` 表示该维度没有值。",
+        "硬约束（违反的组会被整条丢弃，宁可不建组也不要乱建）：",
+        "1. dir 必填，只能写样本里出现过的一个真实目录，或它的一段前缀再跟 *（如 C:\\Code\\work\\*）；禁止写 * 或 ?、禁止留空。",
+        "2. tool 必填，只能写样本里出现过的工具名；禁止写 *。",
+        "3. command 只能写样本里出现过的命令名，或它的一段前缀再跟 *；禁止写 *；样本里命令名是 `-` 时该组不要限制命令维度就只能整组不建。",
+        "4. 只出现在 1 条样本里的类别不要单独建组（噪声）。",
+        "5. 一个组不要跨工具、不要跨互不相关的目录。",
         "只输出 JSON，不要解释。格式：{\"groups\":[{\"tool\":\"...\",\"command\":\"...\",\"dir\":\"...\",\"note\":\"...\"}]}",
         "不要输出任何计数字段；数字一律不要。"
     ].join("\n");
-    const lines = samples.map((s) => `${s.tool}|${s.commandName}|${s.dir}|${s.verdict}`);
+    const lines = samples.map((s) => `${s.tool}|${s.commandName === "" ? "-" : s.commandName}|${s.dir}|${s.verdict}`);
     const user = `样本（共 ${samples.length} 条）：\n${lines.join("\n")}`;
     return {system, user};
 }
@@ -204,7 +297,25 @@ export function resolveTidyModel(configured: string, reasoningEffort: string, fa
  */
 export function createLlmTidyService(deps: TidyDeps, options: TidyOptions): LlmTidyService {
     let running: Promise<TidyRunSummary> | undefined;
+    /**
+     * 上次整理时刻。**不能只放内存**（T45）：旧实现从 0 起算，进程重启后
+     * `Date.now() - lastRunAt` 立刻 ≥ 24h，每次启动都会白跑一轮、把噪声
+     * 样本重新归纳一遍。首次 tick/run 时从 `llm_tidy_runs` 审计表恢复。
+     */
     let lastRunAt = 0;
+    let restored = false;
+
+    /** 从审计表恢复上次整理时刻（只做一次；库不可用就保持 0，下轮再试）。 */
+    const restoreLastRunAt = (db: LearnDb): void => {
+        if (restored || !db.available) return;
+        restored = true;
+        try {
+            const last = db.tidyRuns(1)[0];
+            if (last !== void 0) lastRunAt = Math.max(lastRunAt, last.createdAt);
+        } catch {
+            // 恢复失败按「没有历史」处理：最多多跑一轮，不影响安全。
+        }
+    };
 
     /**
      * 等学习库首次打开完成。`openLearnDb` 是异步的（迁移 + 建立连接），而整理
@@ -263,10 +374,18 @@ export function createLlmTidyService(deps: TidyDeps, options: TidyOptions): LlmT
                     return {status: "failed", model: "", appliedCount: 0, detail: "no model"};
                 }
                 // 事件投影（隐私面：工具/命令名/目录/判决；auto-approved 非用户表态，剔除）。
+                // 命令名取落库时算好的 K1 同源值，历史 NULL 行才回落到收紧后的首词推断；
+                // 目录先过形态判定，把扫描器误报的模式串挡在 prompt 之外。
                 const samples: TidySample[] = [];
+                let droppedSamples = 0;
                 for (const event of opened.db.searchApprovals("", TIDY_EVENT_LIMIT)) {
                     if (event.verdict === "auto-approved") continue;
-                    samples.push({tool: event.tool, commandName: commandNameOf(event.command), dir: event.dir, verdict: event.verdict});
+                    if (!looksLikeDir(event.dir)) {
+                        droppedSamples += 1;
+                        continue;
+                    }
+                    const commandName = event.commandName === "" ? commandNameOf(event.command) : event.commandName;
+                    samples.push({tool: event.tool, commandName, dir: event.dir, verdict: event.verdict});
                 }
                 if (samples.length === 0) {
                     lastRunAt = Date.now();
@@ -282,8 +401,8 @@ export function createLlmTidyService(deps: TidyDeps, options: TidyOptions): LlmT
                 } finally {
                     clearTimeout(timer);
                 }
-                const matchers = parseTidyOutput(output);
-                if (matchers === void 0) {
+                const parsed = parseTidyOutput(output);
+                if (parsed === void 0) {
                     audit(opened.db, modelLabel, promptDigest, output, "failed", 0);
                     return {status: "failed", model: modelLabel, appliedCount: 0, detail: "invalid output"};
                 }
@@ -292,12 +411,21 @@ export function createLlmTidyService(deps: TidyDeps, options: TidyOptions): LlmT
                 for (const rule of opened.db.groupRules()) existing.set(JSON.stringify(rule.matcher), rule);
                 const policies = opened.db.policies();
                 let applied = 0;
+                let zeroSample = 0;
+                const kept = new Set<string>();
                 const at = Date.now();
-                for (const matcher of matchers) {
+                for (const matcher of parsed.matchers) {
                     const counts = computeGroupCounts(matcher, policies);
+                    // 零样本组=模型凭空造的规则：既不贡献先验，又会把 deny 传染到
+                    // 不相干的调用上（T45 前的现网 19 组里 12 组如此），一律不落库。
+                    if (counts.sampleCount === 0) {
+                        zeroSample += 1;
+                        continue;
+                    }
                     const prior = existing.get(JSON.stringify(matcher));
+                    const id = prior?.id ?? uuidv7();
                     opened.db.writeGroupRule({
-                        id: prior?.id ?? uuidv7(),
+                        id,
                         matcher,
                         sampleCount: counts.sampleCount,
                         allowCount: counts.allowCount,
@@ -306,12 +434,24 @@ export function createLlmTidyService(deps: TidyDeps, options: TidyOptions): LlmT
                         active: prior?.active ?? true,
                         updatedAt: at
                     });
+                    kept.add(id);
                     applied += 1;
+                }
+                const dropped = parsed.dropped + zeroSample;
+                if (applied === 0) {
+                    audit(opened.db, modelLabel, promptDigest, output, "failed", 0);
+                    return {status: "failed", model: modelLabel, appliedCount: 0, detail: droppedSamples === 0 ? "no valid group" : `no valid group (dropped ${droppedSamples} samples)`};
+                }
+                // 本轮没再产出的旧组=僵尸规则：留着只会给不成立的意图供先验，清掉。
+                for (const rule of existing.values()) {
+                    if (kept.has(rule.id)) continue;
+                    opened.db.removeGroupRule(rule.id);
                 }
                 lastRunAt = at;
                 deps.onApplied?.();
                 audit(opened.db, modelLabel, promptDigest, output, "ok", applied);
-                return {status: "ok", model: modelLabel, appliedCount: applied, detail: ""};
+                const note = dropped === 0 && droppedSamples === 0 ? "" : `dropped ${dropped} groups / ${droppedSamples} samples`;
+                return {status: "ok", model: modelLabel, appliedCount: applied, detail: note};
             } catch (error) {
                 const detail = error instanceof Error ? error.message : String(error);
                 audit(db ?? deps.db(), modelLabel, "", "", "failed", 0);
@@ -329,6 +469,7 @@ export function createLlmTidyService(deps: TidyDeps, options: TidyOptions): LlmT
                 if (options.assist() !== true || running !== void 0) return;
                 const db = deps.db();
                 if (!db.available) return;
+                restoreLastRunAt(db);
                 const events = db.searchApprovals("", TIDY_EVENT_LIMIT);
                 const newest = events[0]?.at ?? 0;
                 if (newest <= lastRunAt) return;

@@ -157,6 +157,29 @@ export function matchesGroupRule(matcher: GroupMatcher, input: PolicyInput): boo
         && (matcher.dir === "" || globMatch(matcher.dir, input.dir));
 }
 
+/** 纯通配段（含空串）：该维度不设约束。 */
+function isPureWildcard(value: string): boolean {
+    return /^[\s*?]*$/.test(value);
+}
+
+/**
+ * 组先验的**可用性**判定（T45）：只有具体组才能喂 K1 样本闸门。
+ *
+ * 组装：`tool` 非空且非纯通配；`dir` 非空且非纯通配（**目录是安全关键维度**，
+ * 目录维为 `*`/空串的组等于把"某个目录被放过"外推成"任何目录都能放过"）；
+ * 输入有命令名时 `command` 也不能是纯通配（跨命令泛化同样会把不相干意图并成
+ * 一类）。历史垃圾组（T45 前的 19 组 dir 全 `*`）因此不再提供任何先验。
+ *
+ * 注意：本函数只管**喂样本**。deny 传染不受它限制——任一命中组的
+ * `denyCount>0` 仍然整组一票否决（那是收紧方向，越宽越安全）。
+ */
+export function isConcreteGroup(matcher: GroupMatcher, input: PolicyInput): boolean {
+    if (isPureWildcard(matcher.tool)) return false;
+    if (isPureWildcard(matcher.dir)) return false;
+    if (input.commandName !== "" && isPureWildcard(matcher.command)) return false;
+    return true;
+}
+
 /** {@link decidesAutoApprove} 的输入（纯函数面，verify-learn 直测）。 */
 export interface AutoApproveParams {
     /** K1-K4 四层的键（`policyFeatureKeys` 产物）。 */
@@ -177,9 +200,11 @@ export interface AutoApproveParams {
  *    整组否决——被拒过的命令变体不能被 LLM 归并救回来）。K2-K4 的 deny
  *    不牵连无辜组合，只经 β 放行率稀释置信（同工具/同命令有拒绝 →
  *    自动通过变慢）。
- * 2. **样本闸门**：K1 用户表态样本（含命中组先验）≥ minSamples。
+ * 2. **样本闸门**：K1 用户表态样本（含命中组先验）≥ minSamples。组先验只认
+ *    {@link isConcreteGroup} 的组（目录维度必须具体），且只取样本量最大的
+ *    一个命中组、不跨组累加。
  * 3. **合成置信**：各层 β 平滑放行率 (allow+1)/(sample+2) 按层权重
- *    （0.4/0.3/0.2/0.1）合成 ≥ threshold；命中组时 K1 层以组聚合**替代**
+ *    （0.4/0.3/0.2/0.1）合成 ≥ threshold；命中具体组时 K1 层以组聚合**替代**
  *    本键计数（组计数是 tidy 侧实算的精确样本聚合、含本键，叠加会
  *    重复计数；组先验因此也能喂饱新变体的样本闸门）。
  *
@@ -188,15 +213,20 @@ export interface AutoApproveParams {
  */
 export function decidesAutoApprove(params: AutoApproveParams): boolean {
     // 命中组聚合 + deny 传染（整组一票否决）。
+    // T45 起：只有**具体**组（dir / tool / command 都不是纯通配）才提供先验；
+    // 且多个命中组**不累加**——取样本量最大的那一个（旧实现把全部命中组直接
+    // 相加，同一个 K1 行会被多个重叠组重复计数，组越多越容易凑够闸门）。
     let matched = false;
     let groupSample = 0;
     let groupAllow = 0;
     for (const rule of params.groups) {
         if (rule.active !== true || !matchesGroupRule(rule.matcher, params.input)) continue;
         if (rule.denyCount > 0) return false;
+        if (!isConcreteGroup(rule.matcher, params.input)) continue;
+        if (rule.sampleCount <= groupSample) continue;
         matched = true;
-        groupSample += rule.sampleCount;
-        groupAllow += rule.allowCount;
+        groupSample = rule.sampleCount;
+        groupAllow = rule.allowCount;
     }
     let confidence = 0;
     for (const key of params.keys) {
