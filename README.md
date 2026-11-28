@@ -142,7 +142,9 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
 - **用大模型自动整理学习数据**（`llmAssist`，可关闭）：把审批事件里的工具/命令名/目录/判决样本交给所选模型归纳**分组规律**（如 `docker` 命令族、某目录下的脚本族），落成组规则（`llm_group_rules`）为 L2 提供组先验——新特征只要落进已知分组就带着组的样本量起步，学习收敛快得多；
 - **整理用模型**（`llmModel`）：默认「跟随当前模型」（dsh 当前选中的模型），也可下拉指定（列出 dsh 模型目录的全部模型，按 provider 分组）与推理等级（`llmReasoningEffort`）；
 - **LLM 只整理、不裁决**：模型输出只取「哪些调用属于一组」的**分组匹配规则**（工具 + 命令 glob + 目录 glob），数字与裁决字段一律无视、组计数由服务端从真实样本实算——LLM 无法通过虚报数字抬高置信；产物同样过方向锁与 deny 传染（组内有拒绝则整组否决自动通过）；每次整理落 `llm_tidy_runs` 审计（模型、prompt 摘要、结果、应用条数），失败弃用不阻塞门禁；
-- **自动整理时机**：新审批事件 ≥ 20 条或距上次整理 ≥ 24 小时自动触发（异步防抖），也可「立即整理」手动触发；
+- **产物质量闸门**（T45）：模型输出逐组校验——`dir` 是**安全关键维度**，纯通配/空串的组一律丢弃（否则「某目录被放过」会被外推成「任何目录都能放过」，K1 退化成 K2）；`tool` 同样不许纯通配；零样本组（匹配不到任何 K1 精确样本，说明模型编了个不存在的意图）不进库；本轮没再产出的旧组按僵尸规则清理；`directory` 投影先过 `looksLikeDir`，扫描器误报的模式串（`\target\`、`/fire/|"/law/…`）不进 prompt；命令名与 L2 的 K1 **同源**（审批事件在弹窗那一刻就落 `command_name`，历史行为空时回落到收紧的首词推断，猜不出来即空串）；上次整理时刻从 `llm_tidy_runs` 恢复，进程重启后不会立刻白跑一轮；
+- **组规则可见面**（T45）：设置页列出全部组规则（`工具 | 命令 | 目录` + 样本/放行/拒绝计数），可疑的直接删除（Remote `llmGroupRules` / `removeLlmGroupRule(id)`）；此前这层产物完全不可见，只能去翻 `learn.sqlite3`；
+- **自动整理时机**：新审批事件 ≥ 20 条或距上次整理 ≥ 24 小时自动触发（异步防抖），也可「立即整理」手动触发；上次整理时刻取自 `llm_tidy_runs` 审计表，重启不会归零重跑；
 - **结果文案**：面板只显示可读中文（`整理完成：写入 N 组` / `整理完成：暂无审批样本` / `已跳过：大模型整理开关关闭` / `失败：没有可用模型` / `整理失败：<原因>`），宿主的原始状态词不出现在界面上；切换开关或模型会清掉上一次的结果快照（旧文案是**上一次执行时**的状态，留着会与当前设置矛盾）；
 - **库就绪**：整理服务拿的是学习库的**取值函数**（不是装配时的对象快照）+ `ready` 信号——`learn.sqlite3` 是异步打开的，等就绪再读；库真的打不开时结果文案会带具体原因（`db unavailable: migration failed: …` / `sqlite open failed: …`），不再是笼统的 `db unavailable`；
 - **重置学习数据**：二次确认后清空全部学习数据（命中事件、形态豁免、意图策略、组规则、审批事件）重新开始学习；等库就绪再执行，按钮会如实回报「已重置 / 重置失败」；
@@ -150,9 +152,9 @@ dsh plugin --profile web add "github:devilspiderx/dsh-workspace-only-plugin#main
 
 ### 审批事件记录（learn.sqlite3）
 
-**每次弹窗都记录**（`approval_events` 表），不论最终通过、拒绝还是超时——供事后分析误报与审批行为：时间、工具、命令全文、目标目录、触发原因、命中目标列表、判决（含 deny 细分原因）、通道、裁决耗时、会话 id。批量放行（白名单覆盖、没弹窗）不记录；L2 自动通过的调用记 `verdict: "auto-approved"`（通道 `auto`），只作审计、不进学习样本。Remote `searchApprovals` 支持按工具/命令/目录/原因/判决模糊搜索；事件随 `learnRetentionDays` 定期压实。
+**每次弹窗都记录**（`approval_events` 表），不论最终通过、拒绝还是超时——供事后分析误报与审批行为：时间、工具、命令全文、命令名（`command_name`，与 L2 的 K1 同源）、目标目录、触发原因、命中目标列表、判决（含 deny 细分原因）、通道、裁决耗时、会话 id。批量放行（白名单覆盖、没弹窗）不记录；L2 自动通过的调用记 `verdict: "auto-approved"`（通道 `auto`），只作审计、不进学习样本。Remote `searchApprovals` 支持按工具/命令/目录/原因/判决模糊搜索；事件随 `learnRetentionDays` 定期压实。
 
-schema 演进走 **Flyway 式版本化迁移**（`migrations/` 目录的 up/down SQL 成对文件 + `_migrations` 历史表，启动时自动应用）：结构变更留痕可回查，破坏性变更直接写在迁移里（数据可丢弃、不做兼容迁移）。当前表：`hit_events`（形态命中）、`learned_exemptions`（L1 形态豁免）、`approval_events`（审批事件）、`learned_policies`（L2 意图策略，四层特征键）、`llm_group_rules`（LLM 整理产出的组规则）、`llm_tidy_runs`（LLM 整理审计）。
+schema 演进走 **Flyway 式版本化迁移**（`migrations/` 目录的 up/down SQL 成对文件 + `_migrations` 历史表，启动时自动应用）：结构变更留痕可回查，破坏性变更直接写在迁移里（数据可丢弃、不做兼容迁移）。当前表：`hit_events`（形态命中）、`learned_exemptions`（L1 形态豁免）、`approval_events`（审批事件）、`learned_policies`（L2 意图策略，四层特征键）、`llm_group_rules`（LLM 整理产出的组规则）、`llm_tidy_runs`（LLM 整理审计）。`0004_tidy_command_name` 是**破坏性迁移**：给 `approval_events` 加 `command_name`，并 DROP 重建 `llm_group_rules` 清掉 T45 之前的 19 条垃圾组（历史可在 `llm_tidy_runs.output_json` 追溯）。
 
 ## deny 原因与 agent 感知（T33）
 
@@ -288,6 +290,7 @@ node scripts/check-compat.ts     # 对本机 dsh 安装做契约自检
 - **T42：学习面板 inject 抛错**——`llm`/`agentDefaultModel` 是可选宿主服务，旧代码用 `ctx.llm` / `ctx.agentDefaultModel` 直访问，cordis 对未 inject 的属性直接抛 `cannot get property "…" without inject`（面板红字、「立即整理」不可用）。现在改由 `src/host/llm-bridge.ts` 经 `ctx.get()` 取用（不进 `inject`——cordis 没有可选 inject，缺服务的 composition 会让整个插件不激活），服务缺席时「整理」如实报失败而不是抛 inject 错误；RPC 本身失败时前端也不再把文案误报成「管理通道不可用」。
 - **T43：`failed — db unavailable` 的根因**——整理服务在装配时把 `learnService.db` **对象快照**存进依赖，而 `learn.sqlite3` 是异步打开的（Flyway 迁移 + 建连接），装配那一刻拿到的是 `available: false` 的空实现 stub，于是「立即整理」此后永远返回 `failed — db unavailable`（库其实完好：表、迁移历史、数据都在）。现在依赖改成**取值函数** `db: () => learnService.db` + `ready` 信号（等首次打开完成，上限 10s，绝不挂住）；失败原因也不再被吞——`openLearnDb` 区分迁移失败/`migrations/` 缺失/driver 打不开，结果文案带具体原因。附带修掉：就绪前点「重置学习数据」静默失败（现在等就绪并回报结果）、界面直接显示宿主英文状态词（改本地化文案）、切换开关/模型不清旧结果快照。
 - **T44：设置页状态开关改用官方 Switch**——设置 → Workspace Only 里三处「已开启 / 已关闭」文字按钮（顶部总开关、学习面板的「自动审批」与「用大模型自动整理学习数据」）全部换成 `@deepseek-ai/dsh-client-ui-primitives` 的 `Switch`（36×20 胶囊轨道 + 16px 圆钮，选中态 `--dsw-alias-brand-primary` 蓝色、未选中 `--dsw-alias-border-l3`），视觉状态由组件自带的 `role="switch"` + `aria-checked` 驱动，禁用态 `opacity: .5`；界面上不再出现「已开启/已关闭」两个词，配置字段、写回通道与点击语义（`enabled` / `autoApproveFromHistory` / `llmAssist`）一字未改。
+- **T45：LLM 整理产出的组规则全是垃圾的根因**——现网 19 组里 12 组零样本、`&`/`$*`/`*xml*`/`foreach`/`if` 这些根本不是命令名、`dir` 一律是 `*`。逐条根因：①命令名口径错位（整理侧取 `approval_events.command` 的全文首词，L2 的 K1 取语法层的 `shapeSig[1]`，`$javap`/`&`/`[xml]$s` 这种脚本碎片因此成了「命令」）；②`parseTidyOutput` 只校验字符集与长度，不管语义；③零样组照落库；④落库只 upsert 本轮、从不清理不再产出的旧组；⑤组先验绕过目录维度且多个命中组**累加**（同一 K1 行被重复计数）；⑥prompt 里「空串表示该维度不限」直接诱导模型全填 `*`；⑦`lastRunAt` 是内存变量，重启后立刻白跑一轮；⑧投影把扫描器误报的模式串（`\target\`、`/fire/|"/law/…`）当真目录发给模型。修法：审批事件在弹窗那一刻落 `command_name`（与 K1 同源）、`parseTidyOutput` 逐组过滤纯通配/空串的 `dir` 与 `tool`、零样组不落库、僵尸组清理、`isConcreteGroup` 收紧组先验（且只取样本量最大的命中组、不累加）、prompt 重写为「dir 必填且只能写真实目录或前缀 + `*`」、`lastRunAt` 从 `llm_tidy_runs` 恢复、投影先过 `looksLikeDir`；设置页新增组规则可见面与删除按钮（Remote `llmGroupRules` / `removeLlmGroupRule(id)`）。存量 19 条垃圾组由迁移 `0004` 直接 DROP 重建清空。
 - 管理 RPC 有变更（若你有脚本直调 `workspaceOnly/*`）：`setBypass(sessionId, enabled)` → `setScope(sessionId, scope)`（`scope` ∈ `workspace` / `outside-read` / `outside-write`），新增 `addGlobalAlways(dir)`，`snapshot` 的 `sessions[]` 由 `bypass: boolean` 改为 `scope: string`。
 - 管理 RPC 的 `args` 字段名（`sessionId`/`scope`/`dir`/`entry`/`requestId`/`choice`）即各方法的 wire 契约，由插件注册的 strict 调用描述符固定（此前源码签名推断的方式在压缩产物上会全部报 `args fields do not match the descriptor`）；改方法签名或调用载荷后跑 `node scripts/verify-remote-service.ts` 核对三方一致。
 

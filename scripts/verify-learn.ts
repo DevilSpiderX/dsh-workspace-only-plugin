@@ -107,6 +107,7 @@ const hit = (over: Partial<LearnHitInput> = {}): LearnHitInput => ({
         at: Date.now(),
         tool: "bash",
         command: "cat /etc/x",
+        commandName: "cat",
         dir: "/etc",
         reason: "command references a path outside the workspace",
         targets: "[\"/etc/x\"]",
@@ -143,7 +144,7 @@ const hit = (over: Partial<LearnHitInput> = {}): LearnHitInput => ({
     await migrator.connect();
     const status = await migrator.status();
     await migrator.disconnect();
-    check("migration history recorded in _migrations", status.length === 3 && status[0].executed === true && status[0].name === "0001_init" && status[1].executed === true && status[1].name === "0002_add_command_name" && status[2].executed === true && status[2].name === "0003_learn_policies", JSON.stringify(status));
+    check("migration history recorded in _migrations", status.length === 4 && status[0].executed === true && status[0].name === "0001_init" && status[1].executed === true && status[1].name === "0002_add_command_name" && status[2].executed === true && status[2].name === "0003_learn_policies" && status[3].executed === true && status[3].name === "0004_tidy_command_name", JSON.stringify(status));
 }
 
 // --- 五段签名：新旧异键隔离 + 方向锁（abs-path/硬路径不可学）+ 逐签名归纳 ---
@@ -274,7 +275,9 @@ const hit = (over: Partial<LearnHitInput> = {}): LearnHitInput => ({
     const dbPath = join(dir, "learn-t43.sqlite3");
     const learn = createLearnService(dbPath, {enabled: () => true, threshold: () => 3, retentionDays: () => 90, autoApprove: () => true, autoApproveThreshold: () => 0.95, autoApproveMinSamples: () => 5});
     await learn.ready;
-    learn.db.recordApproval({at: Date.now(), tool: "bash", command: "cat /etc/hosts", dir: "/etc", reason: "outside", targets: "/etc/hosts", sensitive: false, verdict: "once", channel: "card", ms: 100, sessionId: "s1"});
+    learn.db.recordApproval({at: Date.now(), tool: "bash", command: "cat /etc/hosts", commandName: "cat", dir: "/etc", reason: "outside", targets: "/etc/hosts", sensitive: false, verdict: "once", channel: "card", ms: 100, sessionId: "s1"});
+    // T45：组计数来自 K1 精确样本；零样组会被丢弃，所以这里必须先有真实表态。
+    for (let i = 0; i < 3; i += 1) learn.recordPolicy({tool: "bash", commandName: "cat", dir: "/etc"}, "once");
     let asked = 0;
     const tidy = createLlmTidyService({
         // 关键：取值函数在装配后才 resolve 成可用库（模拟 index.ts 的装配顺序）。
@@ -307,6 +310,89 @@ const hit = (over: Partial<LearnHitInput> = {}): LearnHitInput => ({
     const summary = await tidy.run();
     check("unavailable db keeps a concrete cause", summary.status === "failed" && summary.detail.startsWith("db unavailable: ") && summary.detail.length > "db unavailable: ".length, summary.detail);
     learn.close();
+}
+
+// --- T45 整理产物质量：零样组不落库 / 纯通配组不落库 / 僵尸组清理 / 目录净化 ---
+{
+    const learn = createLearnService(join(dir, "learn-t45.sqlite3"), {enabled: () => true, threshold: () => 3, retentionDays: () => 90, autoApprove: () => true, autoApproveThreshold: () => 0.95, autoApproveMinSamples: () => 5});
+    await learn.ready;
+    const at = Date.now();
+    const approval = (commandName: string, dir: string, verdict: string) => learn.db.recordApproval({
+        at, tool: "pwsh", command: "Get-ChildItem -Path x", commandName, dir,
+        reason: "outside", targets: "[]", sensitive: false, verdict, channel: "panel", ms: 10, sessionId: "s1"
+    });
+    approval("get-childitem", "D:\\proj", "once");
+    approval("docker", "D:\\proj", "once");
+    // 扫描器误报的模式串被当 dir 的历史事件：不得进 prompt。
+    approval("select-string", "\\target\\", "once");
+    learn.recordPolicy({tool: "pwsh", commandName: "get-childitem", dir: "D:\\proj"}, "once");
+    learn.recordPolicy({tool: "pwsh", commandName: "docker", dir: "D:\\proj"}, "once");
+    // 迁移前的历史行：commandName 为空，靠收紧后的首词推断（猜不出来就空串）。
+    approval("", "D:\\proj", "once");
+
+    check("approval event keeps the K1 command name", learn.db.searchApprovals("", 10).some((item) => item.commandName === "get-childitem"), JSON.stringify(learn.db.searchApprovals("", 10).map((item) => item.commandName)));
+
+    let promptUser = "";
+    const tidy = createLlmTidyService({
+        db: () => learn.db,
+        ready: learn.ready,
+        askModel: async (_model, _system, user) => {
+            promptUser = user;
+            return JSON.stringify({groups: [
+                // 有效：dir 具体、命令名真实、有 K1 样本。
+                {tool: "pwsh", command: "get-childitem", dir: "D:\\proj"},
+                // 无效：dir 纯通配（旧 trash 组的形态）。
+                {tool: "pwsh", command: "get-childitem", dir: "*"},
+                // 无效：工具纯通配。
+                {tool: "*", command: "docker", dir: "D:\\proj"},
+                // 无效：零样组（命令名不存在于 K1 样本）。
+                {tool: "pwsh", command: "made-up-command", dir: "D:\\proj"}
+            ]});
+        },
+        resolveDefaultModel: () => ({provider: "p", model: "m"})
+    }, {assist: () => true, model: () => "p::m", reasoningEffort: () => "default"});
+    const summary = await tidy.run();
+    const rules = learn.db.groupRules();
+    check("tidy applies only valid groups", summary.status === "ok" && summary.appliedCount === 1 && rules.length === 1, JSON.stringify({summary, rules}));
+    check("zero-sample / wildcard groups never reach the db", rules.every((rule) => rule.sampleCount > 0 && rule.matcher.dir === "D:\\proj" && rule.matcher.tool === "pwsh"), JSON.stringify(rules));
+    check("scanner false-positive pattern never reaches the prompt", !promptUser.includes("\\target\\"), promptUser);
+    check("audit reports the dropped counts", summary.detail.includes("dropped"), summary.detail);
+
+    // 僵尸组清理：上一轮留下、本轮未再产出的组必须被删掉。
+    learn.db.writeGroupRule({id: "zombie", matcher: {tool: "pwsh", command: "stale", dir: "D:\\old"}, sampleCount: 9, allowCount: 9, denyCount: 0, active: true, updatedAt: at});
+    await tidy.run();
+    check("stale group from the earlier round is removed", learn.db.groupRules().every((rule) => rule.id !== "zombie"), JSON.stringify(learn.db.groupRules()));
+    learn.close();
+}
+
+// --- T45 lastRunAt 从审计表恢复（重启后不再立刻白跑一轮）---
+{
+    const dbPath = join(dir, "learn-t45-tick.sqlite3");
+    const learn = createLearnService(dbPath, {enabled: () => true, threshold: () => 3, retentionDays: () => 90, autoApprove: () => true, autoApproveThreshold: () => 0.95, autoApproveMinSamples: () => 5});
+    await learn.ready;
+    learn.db.recordApproval({at: Date.now(), tool: "pwsh", command: "Get-ChildItem", commandName: "get-childitem", dir: "D:\\proj", reason: "outside", targets: "[]", sensitive: false, verdict: "once", channel: "panel", ms: 10, sessionId: "s1"});
+    learn.db.recordTidyRun({createdAt: Date.now(), model: "p::m", promptDigest: "d", outputJson: "{}", status: "ok", appliedCount: 1});
+    let asked = 0;
+    const tidy = createLlmTidyService({
+        db: () => learn.db,
+        ready: learn.ready,
+        askModel: async () => {
+            asked += 1;
+            return "{}";
+        },
+        resolveDefaultModel: () => ({provider: "p", model: "m"})
+    }, {assist: () => true, model: () => "p::m", reasoningEffort: () => "default"});
+    tidy.tick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    check("tick after restart does not re-run immediately (T45)", asked === 0, `asked=${asked}`);
+    learn.close();
+}
+
+// --- T45 装配看守：审批事件必须落 K1 同源命令名 ---
+{
+    const source = readFileSync(fileURLToPath(new URL("../src/host/index.ts", import.meta.url)), "utf8");
+    const calls = source.match(/recordApproval\(\{[\s\S]*?\}\)/gu) ?? [];
+    check("index.ts 两处 recordApproval 都带 commandName（T45）", calls.length === 2 && calls.every((call) => /commandName\s*:/u.test(call)), `${calls.length} calls`);
 }
 
 // --- T43 装配看守：整理服务必须拿到**取值函数**而不是库对象快照 ---

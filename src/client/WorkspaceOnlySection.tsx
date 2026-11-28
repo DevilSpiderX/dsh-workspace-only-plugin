@@ -25,6 +25,8 @@ export interface SectionProps {
     resetLearnData: () => unknown;
     /** 任务 T39：立即执行一轮 LLM 整理。 */
     runLlmTidy: () => Promise<unknown>;
+    /** 任务 T45：删除一条 LLM 整理产出的组规则。 */
+    removeLlmGroupRule: (id: string) => unknown;
     /** 任务 T39：模型目录（`remote.session.modelCatalog()`），供模型下拉。 */
     modelCatalog: () => Promise<unknown>;
     useWorkspaceOnly: (selector: (snapshot: SettingsState) => SettingsState) => SettingsState;
@@ -102,6 +104,7 @@ export function WorkspaceOnlySection(
         setLearnConfig,
         resetLearnData,
         runLlmTidy,
+        removeLlmGroupRule,
         modelCatalog,
         useWorkspaceOnly,
         t
@@ -207,6 +210,8 @@ export function WorkspaceOnlySection(
     };
     // 任务 T39：学习层配置的展示值（旧宿主缺字段时取默认）。
     const learn = state.learnConfig ?? {autoApproveFromHistory: true, llmAssist: true, llmModel: "auto", llmReasoningEffort: "default"};
+    // 任务 T45：LLM 整理产出的组规则（旧宿主无该端点 → 空数组，区块照常显示"暂无"）。
+    const groupRules = state.llmGroupRules ?? [];
     const catalogGroups = parseCatalogGroups(catalog);
     const selectedModel = ((): CatalogModelLike | undefined => {
         if (learn.llmModel === "auto") return void 0;
@@ -500,6 +505,32 @@ export function WorkspaceOnlySection(
                         >
                             {t("learn.reset")}
                         </button>
+                    </div>
+                    <div className={entryRowCss.list}>
+                        <div className={css.title}>{t("learn.groups")}</div>
+                        <div className={css.desc}>{t("learn.groupsDesc")}</div>
+                        {groupRules.length === 0 ? (
+                            <div className={entryRowCss.item}>{t("learn.groupsEmpty")}</div>
+                        ) : groupRules.map((rule) => (
+                            <div className={entryRowCss.item} key={rule.id}>
+                                <span className={entryRowCss.path} title={`${rule.tool} | ${rule.command} | ${rule.dir}`}>
+                                    {`${rule.tool} | ${rule.command === "" ? "*" : rule.command} | ${rule.dir === "" ? "*" : rule.dir}`}
+                                </span>
+                                <span className={css.badge}>
+                                    {t("learn.groupSummary", {sample: rule.sampleCount, allow: rule.allowCount, deny: rule.denyCount})}
+                                </span>
+                                <button
+                                    type="button"
+                                    className={entryRowCss.mini}
+                                    disabled={busy}
+                                    onClick={() => {
+                                        removeLlmGroupRule(rule.id);
+                                    }}
+                                >
+                                    {t("learn.groupRemove")}
+                                </button>
+                            </div>
+                        ))}
                     </div>
                     <div className={css.desc}>{t("learn.privacy")}</div>
                 </div>
