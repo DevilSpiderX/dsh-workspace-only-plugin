@@ -138,7 +138,25 @@ const cases: [string, string, string, ShellDialect?][] = [
     ["cat /c/tmp/example.txt", "FLAG", winRoot],
     ["cat /d/work/project/src/a.txt", "FLAG", winRoot],
     ["cat /c/work/project/../../secrets.txt", "FLAG", winRoot],
-    ["cat /etc/passwd", "FLAG", winRoot]
+    ["cat /etc/passwd", "FLAG", winRoot],
+    // --- T46 改善组：`cmd /c` 之类的 Windows 斜杠开关不是路径（生产机实测主因）---
+    ["cmd /c \"mvnw.cmd -o -pl business-platform-service/business-platform-fire -am -Dtest=FooTest test\"", "OK", winRoot, "pwsh"],
+    ["cmd.exe /k dir", "OK", winRoot, "pwsh"],
+    ["cmd /e:on /v:on /c dir", "OK", winRoot, "pwsh"],
+    ["cmd /c \"mvnw.cmd -o test\"", "OK", winRoot, "bash"],
+    ["findstr /R foo src\\x.txt", "OK", winRoot],
+    ["reg /e:on query HKCU\\Software", "OK", winRoot, "pwsh"],
+    // --- T46 回归组：开关豁免不得放宽真实路径 ---
+    // 引号内的越界路径照样拦（开关本身被豁免，内嵌路径仍由 INTERIOR 扫描判定）。
+    ["cmd /c \"type C:\\tmp\\x\"", "FLAG", winRoot, "pwsh"],
+    // 非白名单命令的 `/c`、`/etc` 仍是真实 POSIX 路径。
+    ["cat /c", "FLAG", winRoot],
+    ["cat /etc", "FLAG", winRoot],
+    ["cd /c/Users/Devil", "FLAG", winRoot],
+    // 多段写法（MSYS 盘符写法）不是开关形态。
+    ["cmd /c/Users/Devil", "FLAG", winRoot, "pwsh"],
+    ["type \\\\server\\share\\x", "FLAG", winRoot],
+    ["Compare-Object a b", "OK", winRoot, "pwsh"]
 ];
 
 /**
@@ -557,13 +575,28 @@ for (const [name, expected] of [["read", "read"], ["read_image", "read"], ["glob
 }
 {
     // pwsh 比较运算符（`-match`/`-notmatch`/`-like`/`-notlike`）右侧的字符串
-    // 是模式文本（pattern-arg）；反斜杠转义序列与真实路径在签名形态段异键。
+    // 是模式文本（pattern-arg）：反斜杠转义序列不是 UNC 路径，T46 起不再产生
+    // 路径条目（生产数据里 `Where-Object { $_.FullName -notmatch '\\target\\' }`
+    // 曾以 regex-escape 形态误弹卡片 9 次）。**角色**仍可查，用于确认它走的是
+    // pattern-arg 而不是普通 arg。
     total += 1;
-    const entries = shellEntries("Where-Object { $_.FullName -notmatch '\\\\target\\\\' }", winRoot, "pwsh");
-    const entry = entries.find((item) => item.path === "\\\\target\\\\");
-    const ok = entry !== void 0 && entry.shapeSig === "pwsh|where-object|pattern-arg|regex-escape|single";
-    if (ok) pass += 1;
-    console.log(`${ok ? "PASS" : "FAIL"}  pwsh operator pattern-arg signature => ${entry?.shapeSig}`);
+    const patternWords = parseShellWords("Where-Object { $_.FullName -notmatch '\\\\target\\\\' }", "pwsh");
+    const patternWord = patternWords.find((word) => word.value === "\\\\target\\\\");
+    const roleOk = patternWord !== void 0 && patternWord.role === "pattern-arg" && patternWord.shape === "regex-escape";
+    if (roleOk) pass += 1;
+    console.log(`${roleOk ? "PASS" : "FAIL"}  pwsh operator pattern-arg role => ${patternWord?.role}/${patternWord?.shape}`);
+
+    total += 1;
+    const patternEntries = shellEntries("Where-Object { $_.FullName -notmatch '\\\\target\\\\' }", winRoot, "pwsh");
+    const noRegexEscape = patternEntries.every((item) => !item.path.includes("target"));
+    if (noRegexEscape) pass += 1;
+    console.log(`${noRegexEscape ? "PASS" : "FAIL"}  regex-escape pattern is not a path => ${JSON.stringify(patternEntries.map((item) => item.path))}`);
+
+    // 回归：硬路径 UNC 写法**不受**上述豁免影响（`\\server\share\x` 是真实路径）。
+    total += 1;
+    const uncStill = shellEntries("type '\\\\server\\share\\x'", winRoot, "pwsh").some((item) => item.outside === true);
+    if (uncStill) pass += 1;
+    console.log(`${uncStill ? "PASS" : "FAIL"}  hard UNC still flagged`);
 }
 console.log(`${pass}/${total} passed`);
 if (pass !== total) process.exitCode = 1;

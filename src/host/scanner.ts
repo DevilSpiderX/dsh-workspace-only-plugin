@@ -328,6 +328,11 @@ export function shellEntries(command: unknown, root: string, dialect: ShellDiale
     // 路径判定。单引号整词是字面字符串（`echo '$HOME'` 打印文本，不引用路径）。
     for (const word of parseShellWords(command, dialect)) {
         if (word.role === "comment") continue;
+        // 任务 T46：Windows 原生命令的斜杠开关（`cmd /c`、`cmd /k`、`findstr /R`）
+        // 是命令参数、不是路径 —— 不产生路径条目，因而不进 outside/敏感/学习记账。
+        // 判据在语法层（`isWindowsSlashSwitch`），三条切词路径共用同一份命令白名单；
+        // 引号内的真实路径仍由下方 INTERIOR 扫描照常拦截。
+        if (word.role === "command-switch") continue;
         // 保守孪生：去引号保留反斜杠的 raw 形态（Windows 路径完好）与语法层
         // 的反转义 value 两者都判定 —— 过近似是安全方向。
         const rawStripped = word.raw.replace(/^["']+|["']+$/g, "");
@@ -342,6 +347,12 @@ export function shellEntries(command: unknown, root: string, dialect: ShellDiale
             // 模式参数位上的 `/…/` 定界（`awk '/foo/'`）同理是模式文本。
             const shape = classifyShape(t) ?? (t === word.value ? word.shape : void 0);
             if (shape === "regex-literal" || shape === "comment-slash") continue;
+            // 任务 T46：反斜杠转义序列（`\\target\\`、`\d`、孤立 `\`/`\\`）是正则/
+            // 模式碎片，不是 UNC 路径 —— 此前被 UNC_ABSOLUTE 抢先判成绝对路径，
+            // 生产数据里 `Where-Object { $_.FullName -notmatch '\\target\\' }` 因此
+            // 弹卡片（9/55 条命中）。硬路径形态（`\\server\share\x`）在
+            // classifyShape 里已归 abs-path，不受本豁免影响。
+            if (shape === "regex-escape" && !hasHardPathShape(t)) continue;
             const entrySig = shapeSignature({tool: dialect, command: word.commandName, role: word.role, shape: shape ?? word.shape, quote: word.quote});
             if (isRegexShapedText(t)) continue;
             if (word.role === "pattern-arg" && t.startsWith("/") && !hasHardPathShape(t) && !/\s/.test(t) && (t.endsWith("/") || /\/[a-z]{0,3}$/i.test(t))) continue;
@@ -401,6 +412,9 @@ export function shellEntries(command: unknown, root: string, dialect: ShellDiale
                 if (path === "/dev/null" || path.startsWith("/dev/null")) continue;
                 const innerShape = classifyShape(path);
                 if (innerShape === "regex-literal" || innerShape === "comment-slash") continue;
+                // 任务 T46：字符串内容里的反斜杠转义序列（`'\\target\\'`、
+                // `'\d'`）同样是模式碎片，不是 UNC 路径。硬路径形态不受影响。
+                if (innerShape === "regex-escape" && !hasHardPathShape(path)) continue;
                 if (isRegexShapedText(path)) continue;
                 // pwsh 比较运算符（`-match`/`-notmatch`/`-like`/`-notlike`）右侧的
                 // 字符串内容是模式文本（pattern-arg），不是普通字符串内容。

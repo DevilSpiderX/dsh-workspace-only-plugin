@@ -15,12 +15,40 @@ import {
     pathReason,
     sameLocation,
     sensitiveMatch,
+    shellEntries,
     toWindowsSpelling,
     toolAccessKind
 } from "../src/host/scanner.ts";
 
 const winRoot = "C:\\work\\project";
 const posixRoot = "/home/me/project";
+
+describe("shellEntries（命令开关与正则碎片，T46）", () => {
+    it("`cmd /c` 的开关不产生路径条目（生产机主因）", () => {
+        assert.deepEqual(shellEntries("cmd /c \"mvnw.cmd -o test\"", winRoot, "pwsh"), []);
+        assert.deepEqual(shellEntries("cmd /c \"mvnw.cmd -o test\"", winRoot, "bash"), []);
+        assert.deepEqual(shellEntries("cmd /k dir", winRoot, "pwsh"), []);
+    });
+
+    it("开关被豁免，但引号内的越界路径照样拦", () => {
+        const entries = shellEntries("cmd /c \"type C:\\tmp\\x\"", winRoot, "pwsh");
+        assert.deepEqual(entries.map((entry) => entry.path), ["C:\\tmp\\x"]);
+        assert.equal(entries[0].outside, true);
+    });
+
+    it("非白名单命令的 /c、/etc 仍是路径（方向锁不放宽）", () => {
+        assert.equal(shellEntries("cat /c", winRoot, "pwsh")[0]?.outside, true);
+        assert.equal(shellEntries("cat /etc", winRoot, "pwsh")[0]?.outside, true);
+        assert.equal(shellEntries("cmd /c/Users/Devil", winRoot, "pwsh")[0]?.outside, true);
+    });
+
+    it("反斜杠转义序列不产生路径条目，硬 UNC 仍拦", () => {
+        assert.deepEqual(shellEntries("Where-Object { $_.FullName -notmatch '\\\\target\\\\' }", winRoot, "pwsh"), []);
+        assert.deepEqual(shellEntries("Get-ChildItem | ? { $_.Name -like '\\d' }", winRoot, "pwsh"), []);
+        const unc = shellEntries("type '\\\\server\\share\\x'", winRoot, "pwsh");
+        assert.equal(unc.some((entry) => entry.outside === true), true);
+    });
+});
 
 describe("expandHomeSpelling（家目录写法展开）", () => {
     const env = {HOME: "/home/me", USERPROFILE: "C:\\Users\\me"};

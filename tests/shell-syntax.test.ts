@@ -4,7 +4,7 @@
  */
 import {describe, it} from "node:test";
 import assert from "node:assert/strict";
-import {classifyShape, hasHardPathShape, isRegexShapedText, parseShellWords, shapeSignature} from "../src/host/shell-syntax.ts";
+import {classifyShape, hasHardPathShape, isRegexShapedText, isWindowsSlashSwitch, parseShellWords, shapeSignature} from "../src/host/shell-syntax.ts";
 import type {ShellWord} from "../src/host/shell-syntax.ts";
 
 const rolesOf = (command: string, dialect: "bash" | "pwsh" = "bash"): Array<[string, string]> =>
@@ -48,6 +48,50 @@ describe("parseShellWords（角色标注）", () => {
         const words = parseShellWords("echo 'abc");
         assert.equal(words.length, 2);
         assert.equal(words[1].value, "abc");
+    });
+
+    it("Windows 原生命令的斜杠开关是 command-switch，不是路径（T46）", () => {
+        // 生产机主因：`cmd /c "mvnw.cmd ..."` 的 `/c` 曾被归 abs-path 并判越界。
+        const pwsh = rolesOf("cmd /c \"mvnw.cmd -o test\"", "pwsh");
+        assert.deepEqual(pwsh, [["cmd", "command"], ["/c", "command-switch"], ["\"mvnw.cmd -o test\"", "arg"]]);
+        // Git Bash 里同样跑 cmd（两条数据源、两个方言口径一致）。
+        assert.deepEqual(rolesOf("cmd /c \"mvnw.cmd -o test\"", "bash"), pwsh);
+        // 同类开关：`/k`、带值的 `/e:on`、findstr 的 `/R`。
+        assert.deepEqual(rolesOf("cmd /K dir", "pwsh"), [["cmd", "command"], ["/K", "command-switch"], ["dir", "arg"]]);
+        assert.deepEqual(
+            rolesOf("cmd /e:on /v:on /c dir", "pwsh"),
+            [["cmd", "command"], ["/e:on", "command-switch"], ["/v:on", "command-switch"], ["/c", "command-switch"], ["dir", "arg"]]
+        );
+        assert.deepEqual(rolesOf("findstr /R foo x.txt", "bash"), [["findstr", "command"], ["/R", "command-switch"], ["foo", "pattern-arg"], ["x.txt", "arg"]]);
+    });
+
+    it("非白名单命令与多段写法仍是 arg（开关豁免不放宽真路径，T46）", () => {
+        assert.deepEqual(rolesOf("cat /etc", "bash"), [["cat", "command"], ["/etc", "arg"]]);
+        assert.deepEqual(rolesOf("cat /c", "pwsh"), [["cat", "command"], ["/c", "arg"]]);
+        // MSYS 盘符写法是多段，不是单段开关形态。
+        assert.deepEqual(rolesOf("cmd /c/Users/Devil", "pwsh"), [["cmd", "command"], ["/c/Users/Devil", "arg"]]);
+        assert.deepEqual(rolesOf("cd /c/Users/Devil", "bash"), [["cd", "command"], ["/c/Users/Devil", "arg"]]);
+    });
+});
+
+describe("isWindowsSlashSwitch（T46 判据直测）", () => {
+    it("白名单命令 + 单段开关形态才成立", () => {
+        assert.equal(isWindowsSlashSwitch("cmd", "/c"), true);
+        assert.equal(isWindowsSlashSwitch("cmd.exe", "/k"), true);
+        assert.equal(isWindowsSlashSwitch("findstr", "/R"), true);
+        assert.equal(isWindowsSlashSwitch("reg", "/e:on"), true);
+        // 命令名大小写不敏感（pwsh cmdlet 归一已小写，这里兜住裸写法）。
+        assert.equal(isWindowsSlashSwitch("CMD", "/c"), true);
+    });
+
+    it("非白名单命令、多段写法、非开关形态一律 false（fail-closed）", () => {
+        assert.equal(isWindowsSlashSwitch("cat", "/etc"), false);
+        assert.equal(isWindowsSlashSwitch("cd", "/c/Users/Devil"), false);
+        assert.equal(isWindowsSlashSwitch("cmd", "/c/Users/Devil"), false);
+        assert.equal(isWindowsSlashSwitch("cmd", "/"), false);
+        assert.equal(isWindowsSlashSwitch("cmd", "/1"), false);
+        assert.equal(isWindowsSlashSwitch("", "/c"), false);
+        assert.equal(isWindowsSlashSwitch(void 0, "/c"), false);
     });
 });
 

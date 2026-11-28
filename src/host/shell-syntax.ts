@@ -37,7 +37,14 @@ export type WordRole =
     /** 模式参数位（grep 的 PATTERN、sed 脚本、`-Pattern` 值……）——正则/模式文本。 */
     | "pattern-arg"
     /** 注释（`# ...`、`<# ... #>`）——不携带路径。 */
-    | "comment";
+    | "comment"
+    /**
+     * Windows 原生命令的斜杠开关（`cmd /c`、`cmd /k`、`findstr /R`、`reg /e:on`）——
+     * 开关参数、不是路径（任务 T46）。**只对 `{@link WINDOWS_SLASH_SWITCH_COMMANDS}`
+     * 里的命令生效**，形态还须是单段 `/X` / `/x:value`：`cat /etc`、`cd /c/Users`
+     * 这类真实 POSIX/ MSYS 写法保持 `arg`，照常走门禁。
+     */
+    | "command-switch";
 
 /** 词自身的形态分类（豁免判据与学习签名的形态段）。 */
 export type WordShape =
@@ -187,6 +194,40 @@ export function normalizeCommandName(name: string, dialect: ShellDialect): strin
 }
 
 /**
+ * 以 `/X` 斜杠形式接受开关的 Windows 原生命令（任务 T46）。清单只收
+ * **文档化使用斜杠开关**的 `cmd.exe` 内建与 Win32 工具；`cat`/`ls`/`type`/
+ * `echo`/`cd` 这类 bash/pwsh 命令（或同名 POSIX 工具）**故意不在表内**，
+ * 它们的 `/etc`、`/c/Users` 是真路径，必须继续走门禁。
+ */
+const WINDOWS_SLASH_SWITCH_COMMANDS: ReadonlySet<string> = new Set([
+    "cmd", "cmd.exe", "findstr", "where", "robocopy", "xcopy", "attrib", "icacls", "takeown",
+    "reg", "sc", "net", "schtasks", "tasklist", "taskkill", "chkdsk", "diskpart", "format",
+    "bcdedit", "wevtutil", "wmic", "forfiles", "openfiles", "setx", "shutdown", "label", "vol",
+    "comp", "fc", "choice", "break", "path", "prompt", "title", "tree", "tzutil", "mountvol"
+]);
+
+/** 单段斜杠开关形态：`/c`、`/K`、`/R`、`/e:on`、`/v:on`、`/t:1f`。多段（`/c/Users`）不是开关。 */
+const WINDOWS_SLASH_SWITCH_SHAPE = /^\/[A-Za-z][A-Za-z0-9]*(?::[^\s/]*)?$/;
+
+/**
+ * 该词是不是 Windows 原生命令的开关参数（不是路径）。
+ *
+ * 三重条件同时成立才判开关，任一不确定就保持保守（返回 false，照常按路径判定）：
+ * 1. `commandName` 归一后（basename + 小写）在 {@link WINDOWS_SLASH_SWITCH_COMMANDS} 内；
+ * 2. 形态是单段斜杠开关（{@link WINDOWS_SLASH_SWITCH_SHAPE}）；
+ * 3. 不是硬路径写法的变体（`/c/Users`、`/cygdrive/c/...` 都有后续 `/`，被条件 2 挡掉）。
+ *
+ * 为什么需要它：`cmd /c "mvnw.cmd ..."` 的 `/c` 在语法树里是普通 `generic_token`，
+ * 形态判定会把它归 `abs-path`，在 Windows 上下文又归一成 `C:\`，于是每次
+ * `cmd /c` 都弹审核卡片（生产机实测 3/55 条命中全部是它）。
+ */
+export function isWindowsSlashSwitch(commandName: string | undefined, value: string): boolean {
+    if (commandName === void 0 || commandName === "") return false;
+    if (!WINDOWS_SLASH_SWITCH_COMMANDS.has(commandName.toLowerCase())) return false;
+    return WINDOWS_SLASH_SWITCH_SHAPE.test(value);
+}
+
+/**
  * 形态签名（学习层的归纳键，`learn.ts` 消费）：`工具|命令|角色|形态|引号` ——
  * 判别维度全部保留、绝不泛化到裸 token。命令段是路径词所属命令的归一名
  * （{@link normalizeCommandName}，空串=不可知）。签名级豁免只压掉误报形态的
@@ -299,6 +340,11 @@ interface BashArgState {
 }
 
 function bashArgumentRole(text: string, state: BashArgState): WordRole {
+    // 任务 T46：Windows 原生命令的 `/X` 开关（`cmd /c`）不是路径。
+    if (isWindowsSlashSwitch(normalizeCommandName(state.commandName, "bash"), text)) {
+        state.pendingOptionValue = false;
+        return "command-switch";
+    }
     if (text.startsWith("-")) {
         if (/^--?[A-Za-z0-9][-A-Za-z0-9]*$/.test(text)) state.pendingOptionValue = true;
         return "arg";
@@ -388,9 +434,14 @@ function pwshWords(root: TreeNode, source: string): ShellWord[] {
                         continue;
                     }
                     if (child.type === "command_argument_sep") continue;
-                    const role = PWSH_PATTERN_PARAMS.has(lastParam) ? "pattern-arg" : "arg";
+                    // 任务 T46：`cmd /c` 的 `/c` 在语法树里是 generic_token（不是
+                    // command_parameter），形态会归 abs-path —— 命令开关另立角色。
+                    const word = wordFrom(source, child, "arg", "pwsh", commandName);
+                    const role: WordRole = PWSH_PATTERN_PARAMS.has(lastParam)
+                        ? "pattern-arg"
+                        : isWindowsSlashSwitch(commandName, word.value) ? "command-switch" : "arg";
                     lastParam = "";
-                    out.push(wordFrom(source, child, role, "pwsh", commandName));
+                    out.push({...word, role});
                 }
             }
             return;
@@ -617,6 +668,13 @@ class WordScanner {
             this.bareIndex = 0;
             this.lastParam = "";
             return "command";
+        }
+        // 任务 T46：Windows 原生命令的 `/X` 开关（`cmd /c`）不是路径，也不是
+        // `-Pattern` 那类参数名。两个方言都要判 —— Git Bash 里同样跑 `cmd /c`。
+        if (isWindowsSlashSwitch(normalizeCommandName(this.commandName, this.dialect), value)) {
+            this.lastParam = "";
+            this.pendingOptionValue = false;
+            return "command-switch";
         }
         // pwsh：`-Pattern` 等参数名之后的词是模式文本。
         if (this.dialect === "pwsh") {
