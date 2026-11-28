@@ -64,7 +64,12 @@ export const zh = {
     "learn.tidyNoModel": "失败：没有可用模型（选择具体模型或先设置默认模型）",
     "learn.resetOk": "学习数据已重置",
     "learn.resetFailed": "重置失败：学习库不可用",
-    "learn.privacy": "整理时会把审批事件中的工具名、命令名与目录发送到所选模型；除此之外的内容不会发出。"
+    "learn.privacy": "整理时会把审批事件中的工具名、命令名与目录发送到所选模型；除此之外的内容不会发出。",
+    "learn.groups": "整理产物（组规则）",
+    "learn.groupsDesc": "大模型归纳出的分组匹配规则，用来给相同意图的历史审批提供先验。只有目录具体、且能对上真实样本的组才会生效；看到可疑的组可以直接删掉。",
+    "learn.groupsEmpty": "暂无组规则",
+    "learn.groupRemove": "删除",
+    "learn.groupSummary": "样本 {sample} · 放行 {allow} · 拒绝 {deny}"
 };
 
 /** 文案字典形状（zh 为键集真源；en 漏键/多键在编译期报错）。 */
@@ -136,5 +141,10 @@ export const en: WorkspaceOnlyDictionary = {
     "learn.tidyNoModel": "Failed: no usable model (pick a model or set a default model first)",
     "learn.resetOk": "Learning data reset",
     "learn.resetFailed": "Reset failed: the learning database is unavailable",
-    "learn.privacy": "Tidying sends the tool name, command name and directory of approval events to the selected model; nothing else leaves your machine."
+    "learn.privacy": "Tidying sends the tool name, command name and directory of approval events to the selected model; nothing else leaves your machine.",
+    "learn.groups": "Tidy output (group rules)",
+    "learn.groupsDesc": "Group matching rules the model derived, used to give prior evidence to similar past approvals. Only groups with a concrete directory that matches real samples take effect; delete anything suspicious.",
+    "learn.groupsEmpty": "No group rules yet",
+    "learn.groupRemove": "Delete",
+    "learn.groupSummary": "samples {sample} · allowed {allow} · denied {deny}"
 };

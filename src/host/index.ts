@@ -811,6 +811,7 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
                         at: gateStartedAt,
                         tool: exec.name,
                         command: typeof args.command === "string" ? args.command : "",
+                        commandName: policyInput.commandName,
                         dir: directoryOf(path),
                         reason: entryReason,
                         targets: JSON.stringify([path]),
@@ -857,6 +858,7 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
                         at: gateStartedAt,
                         tool: exec.name,
                         command: typeof args.command === "string" ? args.command : "",
+                        commandName: policyInput.commandName,
                         dir: directoryOf(path),
                         reason: entryReason,
                         targets: JSON.stringify([path]),
@@ -950,6 +952,12 @@ export function apply(ctx: Context, config: PluginConfigInput = {}): void {
         runLlmTidy: () => tidyService.run(),
         llmTidyRuns: (limit) => ({
             runs: learnService.db.tidyRuns(typeof limit === "number" && Number.isFinite(limit) ? Math.max(1, Math.trunc(limit)) : 20)
+        }),
+        // T45：组规则可见面（整理产物此前完全不可见，用户只能翻 sqlite）。
+        llmGroupRules: () => ({rules: learnService.db.groupRules()}),
+        removeLlmGroupRule: (id) => ({
+            removed: learnService.db.removeGroupRule(String(id)),
+            rules: learnService.db.groupRules()
         }),
         clearRecent() {
             recentAsks.length = 0;

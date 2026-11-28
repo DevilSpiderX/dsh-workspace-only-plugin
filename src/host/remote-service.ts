@@ -66,7 +66,9 @@ export const REMOTE_WIRES = Object.freeze({
     learnedPolicies: Object.freeze([]),
     removeLearnedPolicy: Object.freeze(["featureKey"]),
     runLlmTidy: Object.freeze([]),
-    llmTidyRuns: Object.freeze(["limit"])
+    llmTidyRuns: Object.freeze(["limit"]),
+    llmGroupRules: Object.freeze([]),
+    removeLlmGroupRule: Object.freeze(["id"])
 } as const);
 
 /** 暴露给 `ctx.remote.workspaceOnly.*` / `workspaceOnly/*` RPC 的 Remote 方法名。 */
@@ -117,6 +119,10 @@ export interface WorkspaceOnlyHooks {
     runLlmTidy(): unknown;
     /** T39：LLM 整理运行审计（最近 limit 条，新的在前）。 */
     llmTidyRuns(limit: number): unknown;
+    /** T45：LLM 整理产出的组规则列表（工具/命令/目录 glob × 计数 × active）。 */
+    llmGroupRules(): unknown;
+    /** T45：删除一条组规则（该组不再提供先验与 deny 传染）。 */
+    removeLlmGroupRule(id: string): unknown;
 }
 
 /** `bindTypertRemote` 产出的冻结 binding（形状按 `dsh-typert-protocol` 字面复刻）。 */
@@ -234,6 +240,14 @@ const WorkspaceOnlyRemoteService = class extends Service {
 
     async llmTidyRuns(limit: number): Promise<unknown> {
         return this.hooks.llmTidyRuns(limit);
+    }
+
+    async llmGroupRules(): Promise<unknown> {
+        return this.hooks.llmGroupRules();
+    }
+
+    async removeLlmGroupRule(id: string): Promise<unknown> {
+        return this.hooks.removeLlmGroupRule(id);
     }
 };
 

@@ -160,13 +160,57 @@ describe("decidesAutoApprove（L2 自动通过：三条件 fail-closed）", () =
         const rows = keys.map((key) => policyRow(key.featureKey, key.layer, key.layer === 1 ? {sampleCount: 2, allowCount: 2} : {sampleCount: 20, allowCount: 20}));
         const groups: LlmGroupRule[] = [{
             id: "g1",
-            matcher: {tool: "pwsh", command: "docker*", dir: ""},
+            matcher: {tool: "pwsh", command: "docker*", dir: "D:\\proj"},
             sampleCount: 20,
             allowCount: 20,
             denyCount: 0,
             active: true,
             updatedAt: 1
         }];
+        assert.equal(decide(rowsToMap(rows), groups), true);
+    });
+
+    it("T45：目录维度不具体的组不喂先验（跨目录泛化已关掉）", () => {
+        const rows = keys.map((key) => policyRow(key.featureKey, key.layer, key.layer === 1 ? {sampleCount: 2, allowCount: 2} : {sampleCount: 20, allowCount: 20}));
+        const loose: LlmGroupRule[] = [{
+            id: "g1",
+            // 旧 trash 组的典型形态：dir 全是 * / 空串。
+            matcher: {tool: "pwsh", command: "docker*", dir: "*"},
+            sampleCount: 200,
+            allowCount: 200,
+            denyCount: 0,
+            active: true,
+            updatedAt: 1
+        }];
+        assert.equal(decide(rowsToMap(rows), loose), false);
+        const empty: LlmGroupRule[] = [{...loose[0], matcher: {tool: "pwsh", command: "docker*", dir: ""}}];
+        assert.equal(decide(rowsToMap(rows), empty), false);
+        // tool 纯通配的组同样不喂先验（跨工具泛化）。
+        const anyTool: LlmGroupRule[] = [{...loose[0], matcher: {tool: "*", command: "docker*", dir: "D:\\proj"}}];
+        assert.equal(decide(rowsToMap(rows), anyTool), false);
+    });
+
+    it("T45：多个命中组不累加（旧实现相加会让重叠组凑够闸门）", () => {
+        const rows = keys.map((key) => policyRow(key.featureKey, key.layer, key.layer === 1 ? {sampleCount: 0, allowCount: 0} : {sampleCount: 20, allowCount: 20}));
+        const groups: LlmGroupRule[] = [1, 2, 3].map((n) => ({
+            id: `g${n}`,
+            matcher: {tool: "pwsh", command: "docker*", dir: "D:\\proj"},
+            sampleCount: 3,
+            allowCount: 3,
+            denyCount: 0,
+            active: true,
+            updatedAt: 1
+        }));
+        // 3+3+3=9 ≥ minSamples 5 曾是"通过"，现在只取最大组 3 → 不足。
+        assert.equal(decide(rowsToMap(rows), groups), false);
+    });
+
+    it("组先验取样本量最大的命中组（不是相加）", () => {
+        const rows = keys.map((key) => policyRow(key.featureKey, key.layer, key.layer === 1 ? {sampleCount: 1, allowCount: 1} : {sampleCount: 20, allowCount: 20}));
+        const groups: LlmGroupRule[] = [
+            {id: "small", matcher: {tool: "pwsh", command: "docker*", dir: "D:\\proj"}, sampleCount: 3, allowCount: 3, denyCount: 0, active: true, updatedAt: 1},
+            {id: "big", matcher: {tool: "pwsh", command: "docker*", dir: "D:\\proj"}, sampleCount: 30, allowCount: 30, denyCount: 0, active: true, updatedAt: 1}
+        ];
         assert.equal(decide(rowsToMap(rows), groups), true);
     });
 

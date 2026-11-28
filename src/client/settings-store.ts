@@ -41,6 +41,24 @@ export interface LearnConfigView {
     llmReasoningEffort: string;
 }
 
+/**
+ * 任务 T45：LLM 整理产出的**组规则**展示形状。
+ *
+ * 旧版界面完全不展示这层产物，用户只能去翻 `learn.sqlite3` 才发现 19 条组里
+ * 12 条是零样本垃圾、dir 全是 `*`。现在把它摆到设置页，可逐条删除。
+ */
+export interface LlmGroupRuleView {
+    id: string;
+    /** 三段 glob（空串=该维度不限）。 */
+    tool: string;
+    command: string;
+    dir: string;
+    sampleCount: number;
+    allowCount: number;
+    denyCount: number;
+    active: boolean;
+}
+
 /** 一条「最近询问」记录的展示形状。 */
 export interface RecentAskView {
     dir: string;
@@ -72,6 +90,8 @@ export interface SettingsState {
     dialogTimeoutMs: number;
     /** 任务 T39：学习层 Config 字段（可缺席=旧宿主/未加载，UI 取默认值）。 */
     learnConfig?: LearnConfigView;
+    /** 任务 T45：LLM 整理产出的组规则（可缺席=旧宿主/未加载，UI 不渲染该区块）。 */
+    llmGroupRules?: LlmGroupRuleView[];
 }
 
 /** settings 的 namespace 视图（wire 形状，宽松读取）。 */
@@ -89,6 +109,26 @@ interface RemoteSnapshotLike {
     readonly recent?: unknown;
     readonly sessions?: unknown;
     readonly dialogTimeoutMs?: unknown;
+}
+
+/** 任务 T45：wire 边界上归一一组规则（宽松读取，畸形条目丢弃）。 */
+function normalizeGroupRule(entry: unknown): LlmGroupRuleView | undefined {
+    if (entry === null || typeof entry !== "object") return void 0;
+    const raw = entry as {id?: unknown; matcher?: unknown; sampleCount?: unknown; allowCount?: unknown; denyCount?: unknown; active?: unknown};
+    const matcher = (raw.matcher ?? {}) as {tool?: unknown; command?: unknown; dir?: unknown};
+    if (typeof raw.id !== "string") return void 0;
+    const count = (value: unknown): number => typeof value === "number" && Number.isFinite(value) ? value : 0;
+    const segment = (value: unknown): string => typeof value === "string" ? value : "";
+    return {
+        id: raw.id,
+        tool: segment(matcher.tool),
+        command: segment(matcher.command),
+        dir: segment(matcher.dir),
+        sampleCount: count(raw.sampleCount),
+        allowCount: count(raw.allowCount),
+        denyCount: count(raw.denyCount),
+        active: raw.active === true
+    };
 }
 
 const WorkspaceOnlySettingsController = class {
@@ -168,8 +208,27 @@ const WorkspaceOnlySettingsController = class {
                 state.sessions = Array.isArray(snapshot.sessions) ? snapshot.sessions as SessionScopeView[] : [];
                 if (Number.isSafeInteger(snapshot.dialogTimeoutMs) && (snapshot.dialogTimeoutMs as number) >= 1) state.dialogTimeoutMs = snapshot.dialogTimeoutMs as number;
             });
+            await this.refreshLlmGroupRules();
         } catch {
             // 没有管理服务的旧宿主保持仅设置页的 UI。
+        }
+    }
+
+    /**
+     * 任务 T45：拉取 LLM 整理产出的组规则。
+     *
+     * 与 `refreshRemote` 分开：旧宿主没有该端点，失败不该把整个管理面打成
+     * 不可用（组规则是诊断信息，不是门禁状态）。
+     */
+    async refreshLlmGroupRules(): Promise<void> {
+        try {
+            const result = this.unwrap(await this.call("llmGroupRules", {})) as {rules?: unknown} | undefined;
+            const raw = Array.isArray(result?.rules) ? result.rules : [];
+            this.store.update((state) => {
+                state.llmGroupRules = raw.map((entry) => normalizeGroupRule(entry)).filter((rule): rule is LlmGroupRuleView => rule !== void 0);
+            });
+        } catch {
+            // 旧宿主/服务缺席：保持 undefined，UI 不渲染该区块。
         }
     }
 
@@ -304,10 +363,23 @@ const WorkspaceOnlySettingsController = class {
     /** 任务 T39：立即执行一轮 LLM 整理，返回运行摘要（TidyRunSummary 宽松形状）。 */
     async runLlmTidy(): Promise<unknown> {
         try {
-            return this.unwrap(await this.call("runLlmTidy", {}));
+            const result = this.unwrap(await this.call("runLlmTidy", {}));
+            // 整理会重写组规则（含僵尸组清理），产物立即刷新给界面。
+            await this.refreshLlmGroupRules();
+            return result;
         } catch (error) {
             this.fail(error);
             return void 0;
+        }
+    }
+
+    /** 任务 T45：删除一条组规则（该组不再提供先验与 deny 传染）。 */
+    async removeLlmGroupRule(id: string): Promise<void> {
+        try {
+            this.unwrap(await this.call("removeLlmGroupRule", {id}));
+            await this.refreshLlmGroupRules();
+        } catch (error) {
+            this.fail(error);
         }
     }
 
