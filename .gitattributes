@@ -1,0 +1,9 @@
+# 换行统一：以下扩展名一律 LF
+# 背景：Windows 开发机 core.autocrlf=true，入库会按 autocrlf 走，这里显式钉死
+# 提交侧 text 归一化为 LF，检出侧 eol=lf 写 LF，工作区不再随 autocrlf 变 CRLF
+*.js   text eol=lf
+*.jsx  text eol=lf
+*.ts   text eol=lf
+*.tsx  text eol=lf
+*.css  text eol=lf
+*.sql  text eol=lf
